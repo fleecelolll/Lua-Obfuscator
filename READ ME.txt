@@ -1,5 +1,7 @@
 FLEECE LUA OBFUSCATOR
 
+Lua Obfuscator runs locally on 64-bit Windows.
+
 INSTALL
 
 1. Extract the whole folder from the ZIP. Do not run it from inside the ZIP.
@@ -25,7 +27,7 @@ Run Installer.bat again to repair Hercules, Lua 5.4, the private Python environm
 WHAT THE INSTALLER ADDS
 
 - A private .venv folder keeps PySide6 separate from globally installed Python packages.
-- If compatible 64-bit Python 3.10 through 3.14 is unavailable, setup installs Python 3.13 for the current Windows user through winget.
+- If compatible 64-bit Python 3.10 through 3.14 is unavailable, setup installs Python 3.14 for the current Windows user through winget.
 - A pinned Hercules source snapshot is stored inside .runtime.
 - Lua 5.4.8 from LuaBinaries is stored inside .runtime.
 - The Hercules and Lua archives are verified against pinned SHA-256 checksums.

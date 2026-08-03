@@ -2,7 +2,7 @@
 
 # lua obfuscator
 
-A little tool I made with AI to quickly obfuscate Lua 5.4 and Roblox Luau scripts & code on 64-bit Windows.
+A little tool I made with AI to quickly obfuscate Lua 5.4 and Roblox Luau scripts & code locally on 64-bit Windows.
 
 </div>
 
@@ -30,7 +30,7 @@ Lua 5.4 can use the complete Hercules protection set. Luau automatically skips t
 
 The download contains only the installer and app. Setup downloads the pinned Hercules source and Lua 5.4.8 runtime into a private `.runtime` folder. It also creates a private `.venv` for PySide6 and does not require administrator access.
 
-If compatible 64-bit Python 3.10 through 3.14 is already installed, setup uses it to create the private environment. If Python is unavailable, setup installs Python 3.13 for the current Windows user through winget.
+If compatible 64-bit Python 3.10 through 3.14 is already installed, setup uses it to create the private environment. If Python is unavailable, setup installs Python 3.14 for the current Windows user through winget.
 
 The Hercules and Lua archives are checked against pinned SHA-256 checksums before they are installed. Run `Installer.bat` again whenever you want to repair the private environment or downloaded components.
 
