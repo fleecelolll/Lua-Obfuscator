@@ -104,7 +104,7 @@ echo      No compatible 64-bit CPython was found.
 echo.
 echo      This app supports Python 3.10 through 3.14.
 echo      An older or unsupported version may stop it from working.
-echo      Setup can install Python 3.13 for your Windows user
+echo      Setup can install Python 3.14 for your Windows user
 echo      through winget. It does not need administrator access.
 echo.
 where winget.exe >nul 2>nul
@@ -114,15 +114,15 @@ if errorlevel 1 (
 )
 
 if "%ASSUME_YES%"=="1" (
-    echo      Install Python 3.13 now? [Y/N]: Y
+    echo      Install Python 3.14 now? [Y/N]: Y
 ) else (
-    choice /C YN /N /M "      Install Python 3.13 now? [Y/N]: "
+    choice /C YN /N /M "      Install Python 3.14 now? [Y/N]: "
     if errorlevel 2 goto Cancelled
 )
 
 echo.
 echo      Installing Python for the current Windows user...
-winget install --id Python.Python.3.13 --exact --source winget --silent --scope user --accept-source-agreements --accept-package-agreements >>"%LOG%" 2>&1
+winget install --id Python.Python.3.14 --exact --source winget --silent --scope user --accept-source-agreements --accept-package-agreements >>"%LOG%" 2>&1
 if errorlevel 1 (
     set "FAIL_MESSAGE=Python could not be installed through winget."
     goto Failed
@@ -429,7 +429,7 @@ call :ValidateHercules
 if errorlevel 1 exit /b 1
 call :ValidateLua
 if errorlevel 1 exit /b 1
-"%VENV_PY%" -I -c "from pathlib import Path; app=Path(r'%APP_FILE%'); compile(app.read_text(encoding='utf-8'), str(app), 'exec'); print('Application source compiled successfully.')" >>"%LOG%" 2>&1
+"%VENV_PY%" -I -c "import os; from pathlib import Path; app=Path(os.environ['APP_FILE']); compile(app.read_text(encoding='utf-8'), str(app), 'exec'); print('Application source compiled successfully.')" >>"%LOG%" 2>&1
 if errorlevel 1 exit /b 1
 call :RunEngineChecks
 exit /b %ERRORLEVEL%
@@ -445,9 +445,9 @@ if not exist "%CHECK_DIR%" exit /b 1
 >>"%CHECK_DIR%\luau-smoke.luau" echo print(message)
 pushd "%HERCULES_DIR%\src" >nul 2>&1
 if errorlevel 1 exit /b 1
-"%LUA_EXE%" "hercules.lua" "%CHECK_DIR%\lua-smoke.lua" --target lua --light --no-watermark >>"%LOG%" 2>&1
+"%LUA_EXE%" "hercules.lua" "..\..\checks\lua-smoke.lua" --target lua --light --no-watermark >>"%LOG%" 2>&1
 set "LUA_SMOKE_CODE=%ERRORLEVEL%"
-"%LUA_EXE%" "hercules.lua" "%CHECK_DIR%\luau-smoke.luau" --target luau --light --no-watermark >>"%LOG%" 2>&1
+"%LUA_EXE%" "hercules.lua" "..\..\checks\luau-smoke.luau" --target luau --light --no-watermark >>"%LOG%" 2>&1
 set "LUAU_SMOKE_CODE=%ERRORLEVEL%"
 popd >nul 2>&1
 if not "%LUA_SMOKE_CODE%"=="0" exit /b 1

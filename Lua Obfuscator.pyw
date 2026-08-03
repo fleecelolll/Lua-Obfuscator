@@ -926,22 +926,28 @@ class LuaObfuscator(QMainWindow):
             self.work_dir = Path(
                 tempfile.mkdtemp(prefix="job-", dir=str(work_root))
             )
-            staged_source = self.work_dir / (
-                f"{self.source_file.stem}{output_extension}"
-            )
+            # LuaBinaries uses the Windows narrow-character argv API. Keep every
+            # path passed to Lua ASCII-only so scripts and install folders with
+            # Unicode names still work; the published output keeps the user's
+            # original filename.
+            staged_source = self.work_dir / f"input{output_extension}"
             shutil.copy2(self.source_file, staged_source)
             self.staged_output = self.work_dir / (
-                f"{self.source_file.stem}_obfuscated{output_extension}"
+                f"input_obfuscated{output_extension}"
             )
-        except OSError as error:
+            staged_source_argument = os.path.relpath(
+                staged_source,
+                start=self.cli_path.parent,
+            )
+        except (OSError, ValueError) as error:
             self.cleanup_work_dir()
             self.status_label.setText("Could not prepare")
             self.append_log(f"Could not prepare the source file: {error}")
             return
 
         args = [
-            str(self.cli_path),
-            str(staged_source),
+            self.cli_path.name,
+            staged_source_argument,
             "--target",
             target,
             f"--{preset}",
@@ -1012,14 +1018,19 @@ class LuaObfuscator(QMainWindow):
             return True
 
         try:
+            staged_output_argument = os.path.relpath(
+                self.staged_output,
+                start=compiler_path.parent,
+            )
             result = subprocess.run(
-                [str(compiler_path), "-p", str(self.staged_output)],
+                [str(compiler_path), "-p", staged_output_argument],
+                cwd=str(compiler_path.parent),
                 capture_output=True,
                 text=True,
                 timeout=15,
                 creationflags=self._creation_flags(),
             )
-        except (OSError, subprocess.SubprocessError) as error:
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
             self.append_log(f"Lua syntax check failed to start: {error}")
             return False
 
