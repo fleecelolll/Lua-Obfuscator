@@ -1,67 +1,210 @@
+import atexit
+import ctypes
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import traceback
 import uuid
+from ctypes import wintypes
 from pathlib import Path
 from typing import Optional
 
 
-APP_BOOTSTRAP_DIR = Path(__file__).resolve().parent
-VENV_ROOT = APP_BOOTSTRAP_DIR / ".venv"
-VENV_PYW = APP_BOOTSTRAP_DIR / ".venv" / "Scripts" / "pythonw.exe"
-if os.name == "nt" and VENV_PYW.is_file():
-    if Path(sys.prefix).resolve() != VENV_ROOT.resolve():
-        subprocess.Popen(
-            [str(VENV_PYW), str(Path(__file__).resolve()), *sys.argv[1:]],
-            cwd=str(APP_BOOTSTRAP_DIR),
-            creationflags=0x08000000,
-        )
+APP_TITLE = "Lua Obfuscator"
+APP_VERSION = "1.0.3"
+APP_DIR = Path(__file__).resolve().parent
+RUNTIME_DIR = APP_DIR / ".runtime"
+SETUP_LOCK_DIR = RUNTIME_DIR / "setup.lock"
+VENV_ROOT = APP_DIR / ".venv"
+VENV_PY = VENV_ROOT / "Scripts" / "python.exe"
+VENV_PYW = VENV_ROOT / "Scripts" / "pythonw.exe"
+EMBEDDED_PY = RUNTIME_DIR / "python" / "python.exe"
+EMBEDDED_PYW = RUNTIME_DIR / "python" / "pythonw.exe"
+APP_MUTEX_NAMES = (
+    r"Global\FleeceLuaObfuscatorApp",
+    r"Local\FleeceLuaObfuscatorApp",
+)
+APP_MUTEX_HANDLE = None
+ERROR_ACCESS_DENIED = 5
+ERROR_ALREADY_EXISTS = 183
+
+
+def show_native_setup_error(message: str):
+    if os.name == "nt":
+        ctypes.windll.user32.MessageBoxW(None, message, APP_TITLE, 0x10)
+    else:
+        print(f"{APP_TITLE}: {message}", file=sys.stderr)
+
+
+def bootstrap_local_python():
+    current = os.path.normcase(os.path.realpath(sys.executable))
+    for local_python, local_pythonw in (
+        (VENV_PY, VENV_PYW),
+        (EMBEDDED_PY, EMBEDDED_PYW),
+    ):
+        valid_executables = {
+            os.path.normcase(os.path.realpath(path))
+            for path in (local_python, local_pythonw)
+            if path.is_file()
+        }
+        if current in valid_executables:
+            return
+        if not local_python.is_file() or not local_pythonw.is_file():
+            continue
+        try:
+            validation = subprocess.run(
+                [str(local_python), "-I", "-c", "pass"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=8,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if validation.returncode != 0:
+                continue
+            subprocess.Popen(
+                [str(local_pythonw), str(Path(__file__).resolve()), *sys.argv[1:]],
+                cwd=str(APP_DIR),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
         raise SystemExit(0)
 
-
-from PySide6.QtCore import (
-    QEasingCurve,
-    QEvent,
-    QPoint,
-    QParallelAnimationGroup,
-    QProcess,
-    QPropertyAnimation,
-    QRect,
-    Qt,
-    QUrl,
-    Signal,
-)
-from PySide6.QtGui import (
-    QCloseEvent,
-    QDesktopServices,
-    QDragEnterEvent,
-    QDropEvent,
-    QMouseEvent,
-    QPainter,
-    QPen,
-)
-from PySide6.QtWidgets import (
-    QApplication,
-    QFileDialog,
-    QFrame,
-    QGraphicsOpacityEffect,
-    QHBoxLayout,
-    QLabel,
-    QMainWindow,
-    QMessageBox,
-    QPushButton,
-    QProgressBar,
-    QSizePolicy,
-    QTextEdit,
-    QVBoxLayout,
-    QWidget,
-)
+    show_native_setup_error(
+        "Setup is missing, incomplete, or no longer usable.\n\n"
+        "Run Installer.bat, let it finish, then open the Lua Obfuscator shortcut."
+    )
+    raise SystemExit(1)
 
 
-APP_TITLE = "Lua Obfuscator"
+if __name__ == "__main__":
+    bootstrap_local_python()
+
+
+try:
+    from PySide6.QtCore import (
+        QEasingCurve,
+        QEvent,
+        QPoint,
+        QProcess,
+        QPropertyAnimation,
+        QRect,
+        Qt,
+        QUrl,
+        Signal,
+    )
+    from PySide6.QtGui import (
+        QCloseEvent,
+        QDesktopServices,
+        QDragEnterEvent,
+        QDropEvent,
+        QMouseEvent,
+        QPainter,
+        QPen,
+    )
+    from PySide6.QtWidgets import (
+        QApplication,
+        QFileDialog,
+        QFrame,
+        QHBoxLayout,
+        QLabel,
+        QMainWindow,
+        QMessageBox,
+        QPushButton,
+        QProgressBar,
+        QSizePolicy,
+        QTextEdit,
+        QVBoxLayout,
+        QWidget,
+    )
+except Exception:
+    if __name__ == "__main__":
+        show_native_setup_error(
+            "Setup is incomplete and the app window cannot load.\n\n"
+            "Run Installer.bat again to repair the setup."
+        )
+        raise SystemExit(1)
+    raise
+
+
+def handle_unhandled_exception(error_type, error, trace):
+    try:
+        RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        (RUNTIME_DIR / "error.log").write_text(
+            "".join(traceback.format_exception(error_type, error, trace)),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    show_native_setup_error(
+        "The app stopped because of an unexpected error.\n\n"
+        "Run Installer.bat again. If it still happens, check .runtime\\error.log."
+    )
+    application = QApplication.instance()
+    if application is not None:
+        application.quit()
+
+
+if os.name == "nt":
+    NATIVE_KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    NATIVE_KERNEL32.CreateMutexW.argtypes = (
+        ctypes.c_void_p,
+        wintypes.BOOL,
+        wintypes.LPCWSTR,
+    )
+    NATIVE_KERNEL32.CreateMutexW.restype = wintypes.HANDLE
+    NATIVE_KERNEL32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    NATIVE_KERNEL32.CloseHandle.restype = wintypes.BOOL
+else:
+    NATIVE_KERNEL32 = None
+
+
+def release_app_mutex():
+    global APP_MUTEX_HANDLE
+    if APP_MUTEX_HANDLE is None or NATIVE_KERNEL32 is None:
+        return
+    NATIVE_KERNEL32.CloseHandle(APP_MUTEX_HANDLE)
+    APP_MUTEX_HANDLE = None
+
+
+def _try_create_named_mutex(name):
+    if NATIVE_KERNEL32 is None:
+        return "unavailable", None
+    ctypes.set_last_error(0)
+    handle = NATIVE_KERNEL32.CreateMutexW(None, False, name)
+    error_code = ctypes.get_last_error()
+    if handle and error_code == ERROR_ALREADY_EXISTS:
+        NATIVE_KERNEL32.CloseHandle(handle)
+        return "exists", None
+    if handle:
+        return "acquired", handle
+    if error_code == ERROR_ACCESS_DENIED:
+        return "denied", None
+    return "failed", None
+
+
+def acquire_app_mutex():
+    global APP_MUTEX_HANDLE
+    if NATIVE_KERNEL32 is None:
+        return True
+    for index, name in enumerate(APP_MUTEX_NAMES):
+        status, handle = _try_create_named_mutex(name)
+        if status == "acquired":
+            APP_MUTEX_HANDLE = handle
+            atexit.register(release_app_mutex)
+            return True
+        if status == "exists":
+            return False
+        if index == 0 and status == "denied":
+            continue
+        return False
+    return False
+
+
 PRESET_MAP = {
     "Low": "light",
     "Medium": "balanced",
@@ -174,6 +317,7 @@ class AnimatedDropdown(QWidget):
         self.items = list(items)
         self._current = self.items[current_index]
         self._animation = None
+        self._closing = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -212,9 +356,6 @@ class AnimatedDropdown(QWidget):
 
         outer.addWidget(surface)
 
-        self.opacity_effect = QGraphicsOpacityEffect(self.popup)
-        self.popup.setGraphicsEffect(self.opacity_effect)
-
     def currentText(self):
         return self._current
 
@@ -225,12 +366,14 @@ class AnimatedDropdown(QWidget):
         self.hide_popup()
 
     def toggle_popup(self):
-        if self.popup.isVisible():
+        if self.popup.isVisible() and not self._closing:
             self.hide_popup()
         else:
             self.show_popup()
 
     def show_popup(self):
+        self._stop_popup_animation()
+        self._closing = False
         popup_height = len(self.items) * 34 + 12
         popup_width = self.width()
 
@@ -242,10 +385,8 @@ class AnimatedDropdown(QWidget):
 
         if available and below_y + popup_height > available.bottom():
             final_y = button_top_left.y() - popup_height - 4
-            start_y = final_y + 8
         else:
             final_y = below_y
-            start_y = final_y - 8
 
         end_rect = QRect(
             button_top_left.x(),
@@ -253,72 +394,63 @@ class AnimatedDropdown(QWidget):
             popup_width,
             popup_height,
         )
-        start_rect = QRect(
-            button_top_left.x(),
-            start_y,
-            popup_width,
-            popup_height,
-        )
-
         QApplication.instance().installEventFilter(self)
-
-        self.popup.setGeometry(start_rect)
-        self.opacity_effect.setOpacity(0.0)
+        self.popup.setGeometry(end_rect)
+        self.popup.setWindowOpacity(0.0)
         self.popup.show()
         self.popup.raise_()
-
-        geometry_animation = QPropertyAnimation(self.popup, b"geometry")
-        geometry_animation.setDuration(150)
-        geometry_animation.setStartValue(start_rect)
-        geometry_animation.setEndValue(end_rect)
-        geometry_animation.setEasingCurve(QEasingCurve.OutCubic)
-
-        opacity_animation = QPropertyAnimation(self.opacity_effect, b"opacity")
-        opacity_animation.setDuration(150)
+        opacity_animation = QPropertyAnimation(
+            self.popup, b"windowOpacity", self
+        )
+        opacity_animation.setDuration(110)
         opacity_animation.setStartValue(0.0)
         opacity_animation.setEndValue(1.0)
         opacity_animation.setEasingCurve(QEasingCurve.OutCubic)
-
-        group = QParallelAnimationGroup(self)
-        group.addAnimation(geometry_animation)
-        group.addAnimation(opacity_animation)
-
-        self._animation = group
-        group.start()
+        self._animation = opacity_animation
+        opacity_animation.finished.connect(
+            lambda current=opacity_animation: self._popup_animation_finished(
+                current, False
+            )
+        )
+        opacity_animation.start()
 
     def hide_popup(self):
         if not self.popup.isVisible():
             return
-
+        self._stop_popup_animation()
+        self._closing = True
         QApplication.instance().removeEventFilter(self)
-
-        current_rect = self.popup.geometry()
-        end_rect = QRect(
-            current_rect.x(),
-            current_rect.y() - 5,
-            current_rect.width(),
-            current_rect.height(),
+        opacity_animation = QPropertyAnimation(
+            self.popup, b"windowOpacity", self
         )
-
-        geometry_animation = QPropertyAnimation(self.popup, b"geometry")
-        geometry_animation.setDuration(100)
-        geometry_animation.setStartValue(current_rect)
-        geometry_animation.setEndValue(end_rect)
-        geometry_animation.setEasingCurve(QEasingCurve.InCubic)
-
-        opacity_animation = QPropertyAnimation(self.opacity_effect, b"opacity")
-        opacity_animation.setDuration(100)
-        opacity_animation.setStartValue(self.opacity_effect.opacity())
+        opacity_animation.setDuration(75)
+        opacity_animation.setStartValue(self.popup.windowOpacity())
         opacity_animation.setEndValue(0.0)
         opacity_animation.setEasingCurve(QEasingCurve.InCubic)
+        self._animation = opacity_animation
+        opacity_animation.finished.connect(
+            lambda current=opacity_animation: self._popup_animation_finished(
+                current, True
+            )
+        )
+        opacity_animation.start()
 
-        group = QParallelAnimationGroup(self)
-        group.addAnimation(geometry_animation)
-        group.addAnimation(opacity_animation)
-        group.finished.connect(self.popup.hide)
+    def _stop_popup_animation(self):
+        if self._animation is None:
+            return
+        animation = self._animation
+        self._animation = None
+        animation.stop()
+        animation.deleteLater()
 
-        self._animation = group
-        group.start()
+    def _popup_animation_finished(self, animation, hide_after):
+        if self._animation is animation:
+            self._animation = None
+        if hide_after:
+            self.popup.hide()
+            self.popup.setWindowOpacity(1.0)
+            self._closing = False
+        animation.deleteLater()
 
     def eventFilter(self, watched, event):
         if self.popup.isVisible() and event.type() == QEvent.MouseButtonPress:
@@ -1144,11 +1276,100 @@ class LuaObfuscator(QMainWindow):
         event.accept()
 
 
-if __name__ == "__main__":
+def run_self_test(output_dir):
+    assert APP_VERSION == "1.0.3"
+    output_dir = Path(output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    checks = []
+
+    assert PRESET_MAP == {
+        "Low": "light",
+        "Medium": "balanced",
+        "High": "maximum",
+    }
+    assert TARGET_MAP == {"Lua 5.4": "lua", "Roblox Luau": "luau"}
+    checks.append("target and protection presets are stable")
+
+    window = LuaObfuscator()
+    try:
+        assert window.windowTitle() == APP_TITLE
+        assert window.lua_path is not None and window.lua_path.is_file()
+        assert window.cli_path is not None and window.cli_path.is_file()
+        assert not window.running
+        assert window.process is None
+        checks.append("window and local engine paths initialize without user files")
+    finally:
+        window.close()
+
+    if NATIVE_KERNEL32 is not None:
+        test_name = rf"Local\FleeceLuaObfuscatorSelfTest-{uuid.uuid4().hex}"
+        first_status, first_handle = _try_create_named_mutex(test_name)
+        try:
+            second_status, second_handle = _try_create_named_mutex(test_name)
+            if second_handle:
+                NATIVE_KERNEL32.CloseHandle(second_handle)
+            assert first_status == "acquired" and second_status == "exists"
+        finally:
+            if first_handle:
+                NATIVE_KERNEL32.CloseHandle(first_handle)
+        checks.append("a second app-instance mutex is rejected")
+
+    marker = output_dir / "self-test-passed.txt"
+    marker.write_text("\n".join(checks) + "\n", encoding="utf-8")
+    print(f"Lua Obfuscator self-test passed ({len(checks)} checks).")
+    return 0
+
+
+def main():
+    if os.name != "nt":
+        show_native_setup_error("Lua Obfuscator supports 64-bit Windows only.")
+        return 1
+
+    diagnostic_mode = "--self-test" in sys.argv
+    if diagnostic_mode:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    else:
+        if not acquire_app_mutex():
+            show_native_setup_error("Lua Obfuscator is already open.")
+            return 1
+        if SETUP_LOCK_DIR.is_dir():
+            show_native_setup_error(
+                "Lua Obfuscator setup is currently running.\n\n"
+                "Let Installer.bat finish, then open the app again."
+            )
+            return 1
+
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "fleece.lua-obfuscator"
+        )
+    except (AttributeError, OSError):
+        pass
+
     app = QApplication(sys.argv)
+    app.setApplicationVersion(APP_VERSION)
+    app.setApplicationName(APP_TITLE)
+    app.setOrganizationName("Fleece")
     app.setStyle("Fusion")
+    sys.excepthook = handle_unhandled_exception
+
+    if diagnostic_mode:
+        index = sys.argv.index("--self-test")
+        output = (
+            sys.argv[index + 1]
+            if index + 1 < len(sys.argv)
+            else RUNTIME_DIR / "self-test"
+        )
+        try:
+            return run_self_test(output)
+        except Exception:
+            traceback.print_exc()
+            return 1
 
     window = LuaObfuscator()
     window.show()
+    return app.exec()
 
-    sys.exit(app.exec())
+
+if __name__ == "__main__":
+    sys.exit(main())
