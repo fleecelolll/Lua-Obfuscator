@@ -14,7 +14,7 @@ from typing import Optional
 
 
 APP_TITLE = "Lua Obfuscator"
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 APP_DIR = Path(__file__).resolve().parent
 RUNTIME_DIR = APP_DIR / ".runtime"
 SETUP_LOCK_DIR = RUNTIME_DIR / "setup.lock"
@@ -1058,10 +1058,6 @@ class LuaObfuscator(QMainWindow):
             self.work_dir = Path(
                 tempfile.mkdtemp(prefix="job-", dir=str(work_root))
             )
-            # LuaBinaries uses the Windows narrow-character argv API. Keep every
-            # path passed to Lua ASCII-only so scripts and install folders with
-            # Unicode names still work; the published output keeps the user's
-            # original filename.
             staged_source = self.work_dir / f"input{output_extension}"
             shutil.copy2(self.source_file, staged_source)
             self.staged_output = self.work_dir / (
@@ -1277,7 +1273,7 @@ class LuaObfuscator(QMainWindow):
 
 
 def run_self_test(output_dir):
-    assert APP_VERSION == "1.0.3"
+    assert APP_VERSION == "1.0.4"
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     checks = []
