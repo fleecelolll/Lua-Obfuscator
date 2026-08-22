@@ -1,5 +1,7 @@
 import atexit
+import codecs
 import ctypes
+import hashlib
 import os
 import re
 import shutil
@@ -14,7 +16,23 @@ from typing import Optional
 
 
 APP_TITLE = "Lua Obfuscator"
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.5"
+HERCULES_COMMIT = "ace084c897369faf584dfa3baeea159d7b205213"
+LUA_RUNTIME_HASHES = {
+    "lua54.dll": "a842f0d33c897ce08411ea2565e8c19859b45a2374b905de2d56434c7fa4d732",
+    "lua54.exe": "8c95679e6210e5c3972ea473d248607d41b2cb734af67a60dd9eec4bf3ca237d",
+    "luac54.exe": "45541cea599c9f74e0945508a1de00908534c84943c17ff06e43407635585a7a",
+}
+LOG_DOCUMENT_MAX_BLOCKS = 300
+LOG_MESSAGE_MAX_CHARS = 12000
+LOG_MESSAGE_HEAD_CHARS = 7000
+LOG_MESSAGE_TAIL_CHARS = 4000
+PROCESS_LOG_HEAD_CHARS = 49152
+PROCESS_LOG_TAIL_CHARS = 8000
+PROCESS_READ_CHUNK_BYTES = 65536
+PROCESS_READ_BUDGET_BYTES = 262144
+CAPTURED_LOG_HEAD_BYTES = 24576
+CAPTURED_LOG_TAIL_BYTES = 8192
 APP_DIR = Path(__file__).resolve().parent
 RUNTIME_DIR = APP_DIR / ".runtime"
 SETUP_LOCK_DIR = RUNTIME_DIR / "setup.lock"
@@ -50,7 +68,7 @@ def bootstrap_local_python():
             for path in (local_python, local_pythonw)
             if path.is_file()
         }
-        if current in valid_executables:
+        if current in valid_executables and sys.flags.isolated:
             return
         if not local_python.is_file() or not local_pythonw.is_file():
             continue
@@ -66,7 +84,12 @@ def bootstrap_local_python():
             if validation.returncode != 0:
                 continue
             subprocess.Popen(
-                [str(local_pythonw), str(Path(__file__).resolve()), *sys.argv[1:]],
+                [
+                    str(local_pythonw),
+                    "-I",
+                    str(Path(__file__).resolve()),
+                    *sys.argv[1:],
+                ],
                 cwd=str(APP_DIR),
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
@@ -94,6 +117,7 @@ try:
         QPropertyAnimation,
         QRect,
         Qt,
+        QTimer,
         QUrl,
         Signal,
     )
@@ -134,8 +158,11 @@ except Exception:
 def handle_unhandled_exception(error_type, error, trace):
     try:
         RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        error_name = f"{error_type.__module__}.{error_type.__qualname__}"
+        stack = "".join(traceback.format_tb(trace, limit=50))
+        report = truncate_log_message(f"{stack}{error_name}: {error}\n")
         (RUNTIME_DIR / "error.log").write_text(
-            "".join(traceback.format_exception(error_type, error, trace)),
+            report,
             encoding="utf-8",
         )
     except OSError:
@@ -215,6 +242,36 @@ TARGET_MAP = {
     "Roblox Luau": "luau",
 }
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def truncate_log_message(message: str) -> str:
+    if len(message) <= LOG_MESSAGE_MAX_CHARS:
+        return message
+    removed = len(message) - LOG_MESSAGE_HEAD_CHARS - LOG_MESSAGE_TAIL_CHARS
+    marker = f"\n[... {removed:,} characters truncated ...]\n"
+    return (
+        message[:LOG_MESSAGE_HEAD_CHARS]
+        + marker
+        + message[-LOG_MESSAGE_TAIL_CHARS:]
+    )
+
+
+def read_bounded_log_stream(stream) -> str:
+    stream.flush()
+    stream.seek(0, os.SEEK_END)
+    size = stream.tell()
+    if size <= CAPTURED_LOG_HEAD_BYTES + CAPTURED_LOG_TAIL_BYTES:
+        stream.seek(0)
+        data = stream.read()
+    else:
+        stream.seek(0)
+        head = stream.read(CAPTURED_LOG_HEAD_BYTES)
+        stream.seek(-CAPTURED_LOG_TAIL_BYTES, os.SEEK_END)
+        tail = stream.read(CAPTURED_LOG_TAIL_BYTES)
+        removed = size - CAPTURED_LOG_HEAD_BYTES - CAPTURED_LOG_TAIL_BYTES
+        marker = f"\n[... {removed:,} captured bytes truncated ...]\n".encode()
+        data = head + marker + tail
+    return data.decode("utf-8", errors="replace").strip()
 
 
 class TrafficLightButton(QPushButton):
@@ -494,6 +551,14 @@ class LuaObfuscator(QMainWindow):
         self.running = False
         self.cancel_requested = False
         self.last_log_message = ""
+        self.process_log_head_chars = 0
+        self.process_log_overflow_chars = 0
+        self.process_log_tail = ""
+        self.process_log_decoder = None
+        self.process_log_finalized = False
+        self.process_read_scheduled = False
+        self.process_log_final_requested = False
+        self.pending_process_result = None
 
         self.lua_path = self.find_lua_runtime()
         self.cli_path = self.find_hercules_cli()
@@ -506,18 +571,25 @@ class LuaObfuscator(QMainWindow):
     def _creation_flags():
         return 0x08000000 if os.name == "nt" else 0
 
+    @staticmethod
+    def file_sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(262144), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
     def is_compatible_lua(self, path: Path) -> bool:
         try:
-            result = subprocess.run(
-                [str(path), "-v"],
-                capture_output=True,
-                text=True,
-                timeout=4,
-                creationflags=self._creation_flags(),
-            )
-            version_text = f"{result.stdout}\n{result.stderr}".lower()
-            return "lua 5.4" in version_text
-        except (OSError, subprocess.SubprocessError):
+            runtime_dir = path.resolve().parent
+            for filename, expected_hash in LUA_RUNTIME_HASHES.items():
+                candidate = (runtime_dir / filename).resolve()
+                if candidate.parent != runtime_dir or not candidate.is_file():
+                    return False
+                if self.file_sha256(candidate) != expected_hash:
+                    return False
+            return True
+        except (OSError, ValueError):
             return False
 
     def find_lua_runtime(self) -> Optional[Path]:
@@ -534,7 +606,18 @@ class LuaObfuscator(QMainWindow):
             candidate = candidate.resolve()
         except OSError:
             return None
-        if candidate.is_file() and (candidate.parent / "pipeline.lua").is_file():
+        version_file = candidate.parent.parent / ".fleece-version"
+        required_files = (
+            candidate.parent / "pipeline.lua",
+            candidate.parent / "manifest.lua",
+            candidate.parent.parent / "LICENSE",
+            version_file,
+        )
+        try:
+            version = version_file.read_text(encoding="ascii").strip()
+        except (OSError, UnicodeError):
+            return None
+        if all(path.is_file() for path in required_files) and version == HERCULES_COMMIT:
             return candidate
         return None
 
@@ -892,6 +975,7 @@ class LuaObfuscator(QMainWindow):
 
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
+        self.log_box.document().setMaximumBlockCount(LOG_DOCUMENT_MAX_BLOCKS)
         self.log_box.setPlaceholderText("No activity")
         self.log_box.setMinimumHeight(105)
         log_group.addWidget(self.log_box, 1)
@@ -979,6 +1063,7 @@ class LuaObfuscator(QMainWindow):
             self.progress_bar.setValue(0)
 
     def append_log(self, message: str):
+        message = truncate_log_message(str(message))
         message = ANSI_RE.sub("", message).strip()
         if not message or message == self.last_log_message:
             return
@@ -988,11 +1073,53 @@ class LuaObfuscator(QMainWindow):
         scrollbar = self.log_box.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
+    def reset_process_log_capture(self):
+        self.process_log_head_chars = 0
+        self.process_log_overflow_chars = 0
+        self.process_log_tail = ""
+        self.process_log_decoder = codecs.getincrementaldecoder("utf-8")(
+            errors="replace"
+        )
+        self.process_log_finalized = False
+        self.process_read_scheduled = False
+        self.process_log_final_requested = False
+        self.pending_process_result = None
+
+    def consume_process_log_text(self, text: str):
+        if not text:
+            return
+        available = max(0, PROCESS_LOG_HEAD_CHARS - self.process_log_head_chars)
+        head = text[:available]
+        for index in range(0, len(head), LOG_MESSAGE_MAX_CHARS):
+            self.append_log(head[index : index + LOG_MESSAGE_MAX_CHARS])
+        self.process_log_head_chars += len(head)
+        overflow = text[len(head) :]
+        if overflow:
+            self.process_log_overflow_chars += len(overflow)
+            self.process_log_tail = (self.process_log_tail + overflow)[
+                -PROCESS_LOG_TAIL_CHARS:
+            ]
+
+    def finalize_process_log_capture(self):
+        if self.process_log_finalized:
+            return
+        self.process_log_finalized = True
+        if self.process_log_decoder is not None:
+            self.consume_process_log_text(self.process_log_decoder.decode(b"", final=True))
+        if not self.process_log_overflow_chars:
+            return
+        removed = self.process_log_overflow_chars - len(self.process_log_tail)
+        if removed > 0:
+            self.append_log(
+                f"[... {removed:,} process output characters truncated ...]\n"
+                + self.process_log_tail
+            )
+        else:
+            self.append_log(self.process_log_tail)
+
     def refresh_tool_paths(self):
-        if self.lua_path is None or not self.lua_path.is_file():
-            self.lua_path = self.find_lua_runtime()
-        if self.cli_path is None or not self.cli_path.is_file():
-            self.cli_path = self.find_hercules_cli()
+        self.lua_path = self.find_lua_runtime()
+        self.cli_path = self.find_hercules_cli()
 
     def obfuscate_or_cancel(self):
         if self.running:
@@ -1087,6 +1214,7 @@ class LuaObfuscator(QMainWindow):
         self.cancel_requested = False
         self.last_log_message = ""
         self.log_box.clear()
+        self.reset_process_log_capture()
         self.open_folder_button.setEnabled(False)
 
         self.append_log(f"Input: {self.source_file}")
@@ -1115,16 +1243,44 @@ class LuaObfuscator(QMainWindow):
         self.level_dropdown.setEnabled(enabled)
         self.target_dropdown.setEnabled(enabled)
 
-    def read_process_output(self):
-        if not self.process:
+    def schedule_process_log_read(self):
+        if self.process_read_scheduled:
             return
+        self.process_read_scheduled = True
+        QTimer.singleShot(0, self.continue_process_log_read)
 
-        output = bytes(self.process.readAllStandardOutput()).decode(
-            "utf-8",
-            errors="replace",
-        )
-        for raw_line in output.splitlines():
-            self.append_log(raw_line)
+    def continue_process_log_read(self):
+        self.process_read_scheduled = False
+        final = self.process_log_final_requested
+        complete = self.read_process_output(final=final)
+        if final and complete and self.pending_process_result is not None:
+            self.complete_process_finished()
+
+    def read_process_output(self, final=False):
+        if not self.process:
+            return True
+        if self.process_log_decoder is None:
+            self.process_log_decoder = codecs.getincrementaldecoder("utf-8")(
+                errors="replace"
+            )
+        remaining = PROCESS_READ_BUDGET_BYTES
+        while self.process.bytesAvailable() > 0 and remaining > 0:
+            size = min(
+                PROCESS_READ_CHUNK_BYTES,
+                self.process.bytesAvailable(),
+                remaining,
+            )
+            chunk = bytes(self.process.read(size))
+            if not chunk:
+                break
+            self.consume_process_log_text(self.process_log_decoder.decode(chunk))
+            remaining -= len(chunk)
+        if self.process.bytesAvailable() > 0:
+            self.schedule_process_log_read()
+            return False
+        if final:
+            self.finalize_process_log_capture()
+        return True
 
     def cancel_obfuscation(self):
         if self.process and self.process.state() != QProcess.NotRunning:
@@ -1150,20 +1306,24 @@ class LuaObfuscator(QMainWindow):
                 self.staged_output,
                 start=compiler_path.parent,
             )
-            result = subprocess.run(
-                [str(compiler_path), "-p", staged_output_argument],
-                cwd=str(compiler_path.parent),
-                capture_output=True,
-                text=True,
-                timeout=15,
-                creationflags=self._creation_flags(),
-            )
+            with tempfile.TemporaryFile() as compiler_log:
+                result = subprocess.run(
+                    [str(compiler_path), "-p", staged_output_argument],
+                    cwd=str(compiler_path.parent),
+                    stdout=compiler_log,
+                    stderr=subprocess.STDOUT,
+                    timeout=max(
+                        30,
+                        min(300, 30 + self.staged_output.stat().st_size // 1048576),
+                    ),
+                    creationflags=self._creation_flags(),
+                )
+                details = read_bounded_log_stream(compiler_log)
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             self.append_log(f"Lua syntax check failed to start: {error}")
             return False
 
         if result.returncode != 0:
-            details = (result.stdout + result.stderr).strip()
             if details:
                 self.append_log(details)
             return False
@@ -1201,7 +1361,17 @@ class LuaObfuscator(QMainWindow):
         self.staged_output = None
 
     def process_finished(self, exit_code, exit_status):
-        self.read_process_output()
+        self.pending_process_result = (exit_code, exit_status)
+        self.process_log_final_requested = True
+        if self.read_process_output(final=True):
+            self.complete_process_finished()
+
+    def complete_process_finished(self):
+        if self.pending_process_result is None:
+            return
+        exit_code, exit_status = self.pending_process_result
+        self.pending_process_result = None
+        self.process_log_final_requested = False
 
         self.running = False
         self.obfuscate_button.setText("Obfuscate")
@@ -1228,6 +1398,9 @@ class LuaObfuscator(QMainWindow):
 
     def process_error(self, error):
         if error == QProcess.FailedToStart:
+            self.read_process_output(final=True)
+            self.pending_process_result = None
+            self.process_log_final_requested = False
             self.append_log("Could not start Lua. Run installer.bat again.")
             self.running = False
             self.obfuscate_button.setText("Obfuscate")
@@ -1273,7 +1446,7 @@ class LuaObfuscator(QMainWindow):
 
 
 def run_self_test(output_dir):
-    assert APP_VERSION == "1.0.4"
+    assert APP_VERSION == "1.0.5"
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     checks = []
@@ -1294,6 +1467,49 @@ def run_self_test(output_dir):
         assert not window.running
         assert window.process is None
         checks.append("window and local engine paths initialize without user files")
+
+        oversized = "HEAD" + "x" * LOG_MESSAGE_MAX_CHARS + "TAIL"
+        bounded = truncate_log_message(oversized)
+        assert len(bounded) <= LOG_MESSAGE_MAX_CHARS
+        assert bounded.startswith("HEAD") and bounded.endswith("TAIL")
+        assert "characters truncated" in bounded
+
+        with tempfile.TemporaryFile() as captured_stream:
+            captured_stream.write(
+                b"HEAD"
+                + b"x"
+                * (
+                    CAPTURED_LOG_HEAD_BYTES
+                    + CAPTURED_LOG_TAIL_BYTES
+                    + 257
+                )
+                + b"TAIL"
+            )
+            captured = read_bounded_log_stream(captured_stream)
+        assert captured.startswith("HEAD") and captured.endswith("TAIL")
+        assert "captured bytes truncated" in captured
+
+        window.log_box.clear()
+        window.last_log_message = ""
+        for index in range(LOG_DOCUMENT_MAX_BLOCKS + 25):
+            window.append_log(f"[bounded entry {index}]")
+        document_text = window.log_box.toPlainText()
+        assert window.log_box.document().blockCount() <= LOG_DOCUMENT_MAX_BLOCKS
+        assert "[bounded entry 0]" not in document_text
+        assert f"[bounded entry {LOG_DOCUMENT_MAX_BLOCKS + 24}]" in document_text
+
+        window.log_box.clear()
+        window.last_log_message = ""
+        window.reset_process_log_capture()
+        window.consume_process_log_text(
+            "H" * PROCESS_LOG_HEAD_CHARS
+            + "M" * (PROCESS_LOG_TAIL_CHARS + 257)
+        )
+        window.finalize_process_log_capture()
+        process_text = window.log_box.toPlainText()
+        assert "257 process output characters truncated" in process_text
+        assert process_text.endswith("M" * PROCESS_LOG_TAIL_CHARS)
+        checks.append("bounded logs retain useful head and tail output")
     finally:
         window.close()
 
