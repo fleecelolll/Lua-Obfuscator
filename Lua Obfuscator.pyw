@@ -16,7 +16,7 @@ from typing import Optional
 
 
 APP_TITLE = "Lua Obfuscator"
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.0.6"
 HERCULES_COMMIT = "ace084c897369faf584dfa3baeea159d7b205213"
 LUA_RUNTIME_HASHES = {
     "lua54.dll": "a842f0d33c897ce08411ea2565e8c19859b45a2374b905de2d56434c7fa4d732",
@@ -73,16 +73,17 @@ def bootstrap_local_python():
         if not local_python.is_file() or not local_pythonw.is_file():
             continue
         try:
-            validation = subprocess.run(
-                [str(local_python), "-I", "-c", "pass"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=8,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            if validation.returncode != 0:
-                continue
+            if current not in valid_executables:
+                validation = subprocess.run(
+                    [str(local_python), "-I", "-c", "pass"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=60,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                if validation.returncode != 0:
+                    continue
             subprocess.Popen(
                 [
                     str(local_pythonw),
@@ -1446,7 +1447,7 @@ class LuaObfuscator(QMainWindow):
 
 
 def run_self_test(output_dir):
-    assert APP_VERSION == "1.0.5"
+    assert APP_VERSION == "1.0.6"
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     checks = []

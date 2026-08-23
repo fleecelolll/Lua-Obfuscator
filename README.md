@@ -2,49 +2,58 @@
 
 # lua obfuscator
 
-A little tool I made with AI to quickly obfuscate Lua 5.4 and Roblox Luau scripts & code locally on 64-bit Windows.
+A little tool I made with AI to quickly obfuscate Lua 5.4 and Roblox Luau scripts and code locally on 64-bit Windows.
+
+<img src="Lua%20Obfuscator.png" alt="Lua Obfuscator app window" width="760">
 
 </div>
 
-<p align="center">
-  <img src="Lua Obfuscator.png" alt="lua obfuscator" width="694">
-</p>
-
 ## features
 
-- target Lua 5.4 or Roblox Luau
-- choose low, medium, or high obfuscation
-- select a `.lua`, `.luau`, or `.txt` file or drag it into the app
-- choose the output folder
-- follow progress in the built-in log
-- process every script locally without uploads or telemetry
+- Target Lua 5.4 or Roblox Luau
+- Choose low, medium, or high obfuscation
+- Select or drag a `.lua`, `.luau`, or `.txt` source file
+- Use the complete compatible Hercules protection set
+- Choose the output folder and follow progress in the built-in log
+- Keep the original source file unchanged
+- Process every script locally without uploads or telemetry
+- Validate the local engine before setup reports success
 
-Lua 5.4 can use the complete Hercules protection set. Luau automatically skips the VM and bytecode protections that are not compatible with the Luau runtime.
+## requirements
+
+- 64-bit x64 or ARM64 Windows
+- An internet connection during first setup
+- Source code you own or have permission to modify
+- No internet connection while using the installed app
 
 ## installation
 
-1. download the latest ZIP from the [releases page](../../releases/latest)
-2. extract the complete folder
-3. double-click `Installer.bat` and let every setup check pass
-4. double-click the `Lua Obfuscator` shortcut created in the folder
+1. Download the latest release ZIP.
+2. Extract the complete folder.
+3. Double-click `Installer.bat`.
+4. Press **Y** once to approve setup.
+5. Leave the setup window open until every check passes.
+6. Double-click the `Lua Obfuscator` shortcut created in the folder.
 
-Setup keeps official 64-bit Python 3.14.7, the pinned Hercules source, and Lua 5.4.8 privately inside the extracted folder. The app shortcut uses that private Python directly, so it does not depend on Microsoft Store or system Python. Setup does not need administrator access, change PATH, install global Python packages, or install a background service.
+Keep the full extracted folder path at 72 characters or fewer so Windows can install the private packages reliably.
 
-Setup also installs one small shared launcher in `%LOCALAPPDATA%\Fleece Tools\Python Launcher` and sets `.pyw` files to open with it for your Windows account. The launcher prefers the selected tool's sibling `.runtime\python\pythonw.exe` and keeps a legacy `.venv\Scripts\pythonw.exe` fallback for older Fleece Tool releases; it never uses another tool's Python. You can copy the normal `Lua Obfuscator` shortcut to your Desktop or pin it to the taskbar.
+Setup keeps the private Python runtime and all app-specific components inside the extracted folder. It does not require administrator access, change PATH, or install global Python packages. The shortcut starts the app with that private runtime, so Microsoft Store or system Python is not required.
 
-Before the first Fleece Tools association change, setup exports any existing per-user `.pyw` settings to the shared folder. If the previous setting cannot be backed up safely, setup stops without overwriting it. A later non-Fleece choice is also left alone.
+Setup pins and verifies official Python 3.14.7, pip, PySide6-Essentials, Hercules, and Lua 5.4.8. Downloaded runtime archives are checked against pinned SHA-256 hashes before use.
 
-The private Python, PySide6, Hercules, and Lua components are pinned and checked before setup reports success. Downloaded runtime archives are verified with SHA-256. Run `Installer.bat` again to repair setup or after moving the complete folder so its shortcut is recreated for the new location.
+Setup also installs one small shared per-user launcher in `%LOCALAPPDATA%\Fleece Tools\Python Launcher` and safely associates `.pyw` files with it for the current Windows account. It backs up an existing per-user association before the first change and never borrows another tool's Python runtime.
+
+Run `Installer.bat` again to repair the private components or after moving the complete folder. Setup preserves your source files and recreates the shortcut for the folder's current location.
 
 ## usage
 
-1. choose a `.lua`, `.luau`, or `.txt` file
-2. select Lua 5.4 or Roblox Luau
-3. select low, medium, or high obfuscation
-4. choose the output folder
-5. click **Obfuscate**
+1. Choose a `.lua`, `.luau`, or `.txt` source file.
+2. Select Lua 5.4 or Roblox Luau.
+3. Select low, medium, or high obfuscation.
+4. Choose the output folder.
+5. Click **Obfuscate**.
 
-Plain `.txt` files are treated as source for the selected target. Lua output is saved as `<name>.obfuscated.lua`. Luau output is saved as `<name>.obfuscated.luau`. The original file is never overwritten.
+Lua output is saved as `<name>.obfuscated.lua`. Luau output is saved as `<name>.obfuscated.luau`. The original file is never overwritten.
 
 ## built with
 
@@ -55,16 +64,26 @@ Plain `.txt` files are treated as source for the selected target. Lua output is 
 
 ## privacy and removal
 
-The app has no telemetry, analytics, accounts, or usage tracking. Scripts are processed locally and are never uploaded. To remove Lua Obfuscator, close it and delete its folder.
+The app has no telemetry, analytics, advertisements, accounts, uploads, or runtime network requests. Scripts are processed locally. Setup logs can contain local folder paths, so review them before sharing.
 
-The shared `.pyw` launcher can be used by every installed Fleece Tool, so removing one tool does not remove it. To restore the `.pyw` settings that existed before Fleece Tools first configured them, run `%LOCALAPPDATA%\Fleece Tools\Python Launcher\Restore pyw association.cmd`. The restore helper refuses to overwrite a newer non-Fleece choice. After restoring, and after removing every Fleece Tool that uses it, you can delete the shared `Python Launcher` folder. Its registry backup files can contain local application names and paths, so review them before sharing.
+To remove only Lua Obfuscator, close it and delete the extracted folder. The app does not install a background service, add itself to startup, or create an uninstaller entry.
+
+The shared `.pyw` launcher can be used by every installed Fleece Tool, so removing one tool does not remove it. To restore the association that existed before Fleece Tools first configured it, run `%LOCALAPPDATA%\Fleece Tools\Python Launcher\Restore pyw association.cmd` after closing every Fleece Tool.
+
+## troubleshooting
+
+If setup stops, review `setup.log`, correct the listed problem, and run `Installer.bat` again. Setup reports success only after its dependencies, offline self-tests, and shortcut all pass.
+
+If the `Lua Obfuscator` shortcut does not open, run `Installer.bat` again and keep the complete extracted folder together. Setup recreates and validates the shortcut for the folder's current location.
+
+Lua and Hercules are installed privately by `Installer.bat`; a separate system-wide Lua installation is not required.
 
 ## source use
 
-The source is public for transparency and security review. Copyright 2026 Fleece. All rights reserved. No license is granted to use, modify, redistribute, sell, or publish derivative versions beyond the limited rights provided by the hosting platform.
+The source is public for transparency and security review. Copyright 2026 Fleece. All rights reserved. No permission is granted to use, copy, modify, redistribute, sell, or publish derivative versions. See [LICENSE](LICENSE).
 
 ## note
 
 This project was made with AI.
 
-Obfuscation makes source harder to read but does not make it impossible to recover. Only obfuscate code you own or have permission to modify.
+Obfuscation makes source harder to read but cannot make recovery impossible. Only obfuscate code you own or have permission to modify.

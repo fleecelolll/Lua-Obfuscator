@@ -1,88 +1,46 @@
-FLEECE LUA OBFUSCATOR
+LUA OBFUSCATOR
 
 A little tool I made with AI to quickly obfuscate Lua 5.4 and Roblox Luau scripts and code locally on 64-bit Windows.
 
 INSTALL
 
-1. Keep every included file together in the extracted folder. Do not run it from inside the ZIP.
+1. Download the latest release ZIP.
+2. Extract the complete folder.
+3. Double-click Installer.bat.
+4. Press Y once to approve setup.
+5. Leave the setup window open until every check passes.
+6. Double-click the Lua Obfuscator shortcut created in the folder.
 
-2. Double click Installer.bat.
-
-3. Let setup finish every check. The first run can take a few minutes.
-
-4. Double click the "Lua Obfuscator" shortcut that setup creates in this folder.
-
-You can copy that shortcut to your Desktop or pin it to the taskbar. Run Installer.bat again whenever setup needs repair or after moving the complete folder so the shortcut can be refreshed.
+Keep the full extracted folder path at 72 characters or fewer so Windows can install the private packages reliably.
 
 USE
 
-Double-click the "Lua Obfuscator" shortcut, choose a .lua, .luau, or .txt file, select Lua 5.4 or Roblox Luau, select an obfuscation level, choose the output folder, and click Obfuscate.
+1. Choose a .lua, .luau, or .txt source file.
+2. Select Lua 5.4 or Roblox Luau.
+3. Select low, medium, or high obfuscation.
+4. Choose the output folder.
+5. Click Obfuscate.
 
-Plain .txt files are treated as source for the selected target. Lua output is saved as <name>.obfuscated.lua. Luau output is saved as <name>.obfuscated.luau. The original file is never overwritten.
+SETUP DETAILS
 
-TARGETS
+Setup keeps official Python 3.14.7, PySide6-Essentials, Hercules, Lua 5.4.8, settings, and app-specific files private to this folder. It does not require administrator access, change PATH, or install global Python packages. Downloaded runtime archives are verified before use.
 
-- Lua 5.4 can use every protection available in Hercules.
-- Roblox Luau automatically skips the VM and bytecode protections that are incompatible with Luau.
+Setup creates and validates a normal Lua Obfuscator shortcut in this folder. Run Installer.bat again to repair setup or after moving the complete folder. Your source files are never changed by setup.
 
-UPDATES
+PRIVACY AND REMOVAL
 
-Run Installer.bat again to repair or update the private Python environment, PySide6, Hercules, or Lua 5.4. Setup keeps your own scripts untouched and recreates the shortcut for the folder's current location.
+The app has no telemetry, analytics, advertisements, accounts, uploads, or runtime network requests. Scripts are processed locally. Review setup.log before sharing because it can contain local folder paths.
 
-WHAT THE INSTALLER ADDS
-
-- Installs or repairs official 64-bit Python 3.14.7 privately in .runtime\python.
-
-- Does not use or modify Microsoft Store or system Python.
-
-- Installs pinned PySide6 window components from official PyPI.
-
-- Stores a pinned Hercules source snapshot and Lua 5.4.8 inside .runtime.
-
-- Verifies downloaded private-runtime files with SHA-256 checksums.
-
-- Compiles the app source and runs local app, Lua, Lua compiler, and Hercules self-tests.
-
-- Creates a normal double-clickable Lua Obfuscator shortcut.
-
-- Installs one shared per-user Fleece Tools launcher here:
-
-  %LOCALAPPDATA%\Fleece Tools\Python Launcher
-
-- Sets .pyw files to use that shared launcher for your Windows account.
-
-The launcher first looks for .runtime\python\pythonw.exe beside the selected .pyw file, then keeps .venv\Scripts\pythonw.exe only as a fallback for older Fleece Tool releases. It never uses another tool's private Python.
-
-Before the first Fleece Tools association change, setup exports existing per-user .pyw settings into the shared launcher folder. If setup cannot safely save an existing non-Fleece setting, it stops without overwriting it. If you choose a different .pyw app later, future setup runs leave that newer choice alone.
-
-Setup does not need administrator access, change PATH, install global Python packages, or install a background service.
-
-PRIVACY
-
-The app contains no telemetry, analytics, accounts, or usage tracking. Scripts are processed locally and are never uploaded. Installer.bat connects only to the official setup sources described above.
+To remove this tool, close it and delete the extracted folder. The shared Fleece Tools .pyw launcher can be restored later with the helper in %LOCALAPPDATA%\Fleece Tools\Python Launcher after every Fleece Tool is closed.
 
 TROUBLESHOOTING
 
-If setup fails, check your internet connection and run Installer.bat again. Details are saved in setup.log. The log can include local folder paths, so review it before sharing it.
+If setup or the shortcut fails, review setup.log and run Installer.bat again. Success is shown only after the dependencies, offline self-tests, and shortcut all pass. Keep the complete extracted folder together.
 
-If the Lua Obfuscator shortcut does not open, rerun Installer.bat and make sure every final check passes. Setup recreates the shortcut for the folder's current location. Keep the complete folder together.
+Lua and Hercules are installed privately by Installer.bat. A separate system-wide Lua installation is not required.
 
-REMOVE
+SOURCE USE
 
-To remove only Lua Obfuscator, close the app and delete this folder. That removes its private Python environment, Hercules, Lua 5.4, and app files.
+Copyright 2026 Fleece. All rights reserved. The source is public only for transparency and security review. No permission is granted to copy, modify, redistribute, sell, or publish derivative versions. See LICENSE.
 
-The shared .pyw launcher can be used by every Fleece Tool, so deleting one tool does not remove it. To restore the .pyw settings that existed before Fleece Tools first changed them, run:
-
-  %LOCALAPPDATA%\Fleece Tools\Python Launcher\Restore pyw association.cmd
-
-The restore helper stops without overwriting a newer non-Fleece choice. After restoring, and after removing every Fleece Tool that uses the launcher, you can delete the shared Python Launcher folder. Its registry backup files can include local program names and paths, so review them before sharing.
-
-SOURCE AND RESPONSIBLE USE
-
-Source: https://github.com/fleecelolll/Lua-Obfuscator
-
-The source is public for transparency and security review. Copyright 2026 Fleece. All rights reserved. No license is granted to use, modify, redistribute, sell, or publish derivative versions beyond the limited rights provided by the hosting platform.
-
-This project was made with AI.
-
-Obfuscation makes source harder to read but does not make it impossible to recover. Only obfuscate code you own or have permission to modify.
+This project was made with AI. Obfuscation cannot make recovery impossible. Only obfuscate code you own or have permission to modify.
