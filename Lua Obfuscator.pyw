@@ -5,9 +5,12 @@ import hashlib
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import traceback
 import uuid
 from ctypes import wintypes
@@ -16,7 +19,7 @@ from typing import Optional
 
 
 APP_TITLE = "Lua Obfuscator"
-APP_VERSION = "1.0.6"
+APP_VERSION = "1.0.7"
 HERCULES_COMMIT = "ace084c897369faf584dfa3baeea159d7b205213"
 LUA_RUNTIME_HASHES = {
     "lua54.dll": "a842f0d33c897ce08411ea2565e8c19859b45a2374b905de2d56434c7fa4d732",
@@ -33,6 +36,11 @@ PROCESS_READ_CHUNK_BYTES = 65536
 PROCESS_READ_BUDGET_BYTES = 262144
 CAPTURED_LOG_HEAD_BYTES = 24576
 CAPTURED_LOG_TAIL_BYTES = 8192
+VALIDATION_LOG_MAX_BYTES = 32768
+WORK_CLEANUP_MIN_AGE_SECONDS = 24 * 60 * 60
+WORK_CLEANUP_SCAN_LIMIT = 128
+WORK_CLEANUP_REMOVE_LIMIT = 8
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 APP_DIR = Path(__file__).resolve().parent
 RUNTIME_DIR = APP_DIR / ".runtime"
 SETUP_LOCK_DIR = RUNTIME_DIR / "setup.lock"
@@ -243,6 +251,86 @@ TARGET_MAP = {
     "Roblox Luau": "luau",
 }
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def build_obfuscation_arguments(cli_name, source_argument, target, preset):
+    return [
+        "-E",
+        cli_name,
+        source_argument,
+        "--target",
+        target,
+        f"--{preset}",
+        "--no-watermark",
+    ]
+
+
+def extend_bounded_bytes(buffer, data, limit):
+    available = max(0, limit - len(buffer))
+    kept = data[:available]
+    buffer.extend(kept)
+    return len(data) - len(kept)
+
+
+def is_plain_directory(path):
+    try:
+        details = os.lstat(path)
+    except (OSError, ValueError):
+        return False
+    reparse_point = (
+        getattr(details, "st_file_attributes", 0)
+        & FILE_ATTRIBUTE_REPARSE_POINT
+    )
+    return stat.S_ISDIR(details.st_mode) and not reparse_point
+
+
+def remove_job_directory(path, work_root):
+    target = Path(path)
+    root = Path(work_root)
+    if target.parent != root or not target.name.startswith("job-"):
+        return False
+    if not is_plain_directory(target):
+        return False
+    try:
+        shutil.rmtree(target)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def cleanup_stale_work_directories(work_root, current_time=None):
+    root = Path(work_root)
+    now = time.time() if current_time is None else current_time
+    removed = 0
+    scanned = 0
+    try:
+        entries = os.scandir(root)
+    except (OSError, ValueError):
+        return 0
+
+    with entries:
+        for entry in entries:
+            if scanned >= WORK_CLEANUP_SCAN_LIMIT or removed >= WORK_CLEANUP_REMOVE_LIMIT:
+                break
+            scanned += 1
+            if not entry.name.startswith("job-"):
+                continue
+            try:
+                details = entry.stat(follow_symlinks=False)
+            except (OSError, ValueError):
+                continue
+            if (
+                not stat.S_ISDIR(details.st_mode)
+                or (
+                    getattr(details, "st_file_attributes", 0)
+                    & FILE_ATTRIBUTE_REPARSE_POINT
+                )
+                or now - details.st_mtime < WORK_CLEANUP_MIN_AGE_SECONDS
+            ):
+                continue
+            if remove_job_directory(Path(entry.path), root):
+                removed += 1
+    return removed
 
 
 def truncate_log_message(message: str) -> str:
@@ -546,6 +634,10 @@ class LuaObfuscator(QMainWindow):
         self.output_folder = Path.home() / "Downloads"
         self.output_file: Optional[Path] = None
         self.process: Optional[QProcess] = None
+        self.validation_process: Optional[QProcess] = None
+        self.validation_output = bytearray()
+        self.validation_output_dropped = 0
+        self.validation_timed_out = False
         self.work_dir: Optional[Path] = None
         self.staged_output: Optional[Path] = None
         self.active_target: Optional[str] = None
@@ -561,16 +653,33 @@ class LuaObfuscator(QMainWindow):
         self.process_log_final_requested = False
         self.pending_process_result = None
 
+        self.validation_timer = QTimer(self)
+        self.validation_timer.setSingleShot(True)
+        self.validation_timer.timeout.connect(self.validation_timeout)
+        self.stale_cleanup_timer = QTimer(self)
+        self.stale_cleanup_timer.setSingleShot(True)
+        self.stale_cleanup_timer.timeout.connect(self.start_stale_work_cleanup)
+
         self.lua_path = self.find_lua_runtime()
         self.cli_path = self.find_hercules_cli()
 
         self.apply_style()
         self.build_ui()
         self.report_setup_status()
+        self.stale_cleanup_timer.start(750)
 
     @staticmethod
     def _creation_flags():
         return 0x08000000 if os.name == "nt" else 0
+
+    def start_stale_work_cleanup(self):
+        work_root = self.app_dir / ".runtime" / "work"
+        threading.Thread(
+            target=cleanup_stale_work_directories,
+            args=(work_root,),
+            name="FleeceLuaWorkCleanup",
+            daemon=True,
+        ).start()
 
     @staticmethod
     def file_sha256(path: Path) -> str:
@@ -590,22 +699,23 @@ class LuaObfuscator(QMainWindow):
                 if self.file_sha256(candidate) != expected_hash:
                     return False
             return True
-        except (OSError, ValueError):
+        except (OSError, RuntimeError, ValueError):
             return False
 
     def find_lua_runtime(self) -> Optional[Path]:
         candidate = self.app_dir / ".runtime" / "lua54" / "lua54.exe"
         try:
             candidate = candidate.resolve()
-        except OSError:
+            compatible = candidate.is_file() and self.is_compatible_lua(candidate)
+        except (OSError, RuntimeError, ValueError):
             return None
-        return candidate if candidate.is_file() and self.is_compatible_lua(candidate) else None
+        return candidate if compatible else None
 
     def find_hercules_cli(self) -> Optional[Path]:
         candidate = self.app_dir / ".runtime" / "hercules" / "src" / "hercules.lua"
         try:
             candidate = candidate.resolve()
-        except OSError:
+        except (OSError, RuntimeError, ValueError):
             return None
         version_file = candidate.parent.parent / ".fleece-version"
         required_files = (
@@ -616,9 +726,10 @@ class LuaObfuscator(QMainWindow):
         )
         try:
             version = version_file.read_text(encoding="ascii").strip()
-        except (OSError, UnicodeError):
+            files_available = all(path.is_file() for path in required_files)
+        except (OSError, RuntimeError, UnicodeError, ValueError):
             return None
-        if all(path.is_file() for path in required_files) and version == HERCULES_COMMIT:
+        if files_available and version == HERCULES_COMMIT:
             return candidate
         return None
 
@@ -1025,8 +1136,14 @@ class LuaObfuscator(QMainWindow):
             self.set_source_file(Path(filename))
 
     def set_source_file(self, path: Path):
-        path = path.expanduser().resolve()
-        if not path.is_file() or path.suffix.lower() not in {".lua", ".luau", ".txt"}:
+        try:
+            path = path.expanduser().resolve(strict=True)
+            path_is_file = path.is_file()
+        except (OSError, RuntimeError, ValueError) as error:
+            self.status_label.setText("Choose a script file")
+            self.append_log(f"Could not open that script path: {error}")
+            return
+        if not path_is_file or path.suffix.lower() not in {".lua", ".luau", ".txt"}:
             self.status_label.setText("Choose a script file")
             self.append_log("Choose a valid .lua, .luau, or .txt file.")
             return
@@ -1051,7 +1168,12 @@ class LuaObfuscator(QMainWindow):
             str(self.output_folder),
         )
         if folder:
-            self.output_folder = Path(folder).resolve()
+            try:
+                self.output_folder = Path(folder).resolve(strict=True)
+            except (OSError, RuntimeError, ValueError) as error:
+                self.status_label.setText("Invalid output")
+                self.append_log(f"Could not use that output folder: {error}")
+                return
             self.output_path_label.setText(str(self.output_folder))
             self.output_path_label.setToolTip(str(self.output_folder))
 
@@ -1131,7 +1253,11 @@ class LuaObfuscator(QMainWindow):
     def start_obfuscation(self):
         self.refresh_tool_paths()
 
-        if self.source_file is None or not self.source_file.is_file():
+        try:
+            source_is_file = self.source_file is not None and self.source_file.is_file()
+        except (OSError, RuntimeError, ValueError):
+            source_is_file = False
+        if not source_is_file:
             self.status_label.setText("Choose a file")
             self.append_log("Choose a .lua, .luau, or .txt file first.")
             return
@@ -1160,12 +1286,26 @@ class LuaObfuscator(QMainWindow):
             self.append_log(f"Could not create the output folder: {error}")
             return
 
-        if output_file.resolve() == self.source_file.resolve():
+        try:
+            output_matches_source = (
+                output_file.resolve() == self.source_file.resolve(strict=True)
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            self.status_label.setText("Invalid output")
+            self.append_log(f"Could not validate the output path: {error}")
+            return
+        if output_matches_source:
             self.status_label.setText("Invalid output")
             self.append_log("The output cannot overwrite the original file.")
             return
 
-        if output_file.exists():
+        try:
+            output_exists = output_file.exists()
+        except (OSError, RuntimeError, ValueError) as error:
+            self.status_label.setText("Invalid output")
+            self.append_log(f"Could not inspect the output path: {error}")
+            return
+        if output_exists:
             choice = QMessageBox.question(
                 self,
                 "Replace output?",
@@ -1201,14 +1341,12 @@ class LuaObfuscator(QMainWindow):
             self.append_log(f"Could not prepare the source file: {error}")
             return
 
-        args = [
+        args = build_obfuscation_arguments(
             self.cli_path.name,
             staged_source_argument,
-            "--target",
             target,
-            f"--{preset}",
-            "--no-watermark",
-        ]
+            preset,
+        )
 
         self.output_file = output_file
         self.active_target = target
@@ -1284,53 +1422,155 @@ class LuaObfuscator(QMainWindow):
         return True
 
     def cancel_obfuscation(self):
-        if self.process and self.process.state() != QProcess.NotRunning:
+        process = self.validation_process or self.process
+        if process and process.state() != QProcess.NotRunning:
             self.cancel_requested = True
             self.status_label.setText("Stopping...")
-            self.process.kill()
+            process.kill()
 
-    def validate_staged_output(self) -> bool:
-        if self.staged_output is None or not self.staged_output.is_file():
-            return False
-        if self.staged_output.stat().st_size == 0:
-            return False
+    def staged_output_size(self):
+        if self.staged_output is None:
+            return None
+        try:
+            if not self.staged_output.is_file():
+                return None
+            size = self.staged_output.stat().st_size
+        except (OSError, RuntimeError, ValueError) as error:
+            self.append_log(f"Could not inspect the staged output: {error}")
+            return None
+        return size if size > 0 else None
+
+    def start_output_validation(self, staged_size):
         if self.active_target != "lua" or self.lua_path is None:
-            return True
+            self.publish_validated_output()
+            return
 
         compiler_path = self.lua_path.with_name("luac54.exe")
-        if not compiler_path.is_file():
-            self.append_log("Lua output could not be syntax checked.")
-            return True
-
         try:
+            compiler_available = compiler_path.is_file()
             staged_output_argument = os.path.relpath(
                 self.staged_output,
                 start=compiler_path.parent,
             )
-            with tempfile.TemporaryFile() as compiler_log:
-                result = subprocess.run(
-                    [str(compiler_path), "-p", staged_output_argument],
-                    cwd=str(compiler_path.parent),
-                    stdout=compiler_log,
-                    stderr=subprocess.STDOUT,
-                    timeout=max(
-                        30,
-                        min(300, 30 + self.staged_output.stat().st_size // 1048576),
-                    ),
-                    creationflags=self._creation_flags(),
-                )
-                details = read_bounded_log_stream(compiler_log)
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
-            self.append_log(f"Lua syntax check failed to start: {error}")
-            return False
+        except (OSError, RuntimeError, ValueError) as error:
+            self.finish_operation(
+                "Failed",
+                f"Lua syntax check could not be prepared: {error}",
+            )
+            return
 
-        if result.returncode != 0:
+        if not compiler_available:
+            self.append_log("Lua output could not be syntax checked.")
+            self.publish_validated_output()
+            return
+
+        process = QProcess(self)
+        self.validation_process = process
+        self.validation_output.clear()
+        self.validation_output_dropped = 0
+        self.validation_timed_out = False
+        process.setWorkingDirectory(str(compiler_path.parent))
+        process.setProcessChannelMode(QProcess.MergedChannels)
+        process.readyReadStandardOutput.connect(
+            lambda current=process: self.read_validation_output(current)
+        )
+        process.finished.connect(
+            lambda exit_code, exit_status, current=process: (
+                self.validation_finished(current, exit_code, exit_status)
+            )
+        )
+        process.errorOccurred.connect(
+            lambda error, current=process: self.validation_error(current, error)
+        )
+
+        timeout_seconds = max(30, min(300, 30 + staged_size // 1048576))
+        self.validation_timer.start(timeout_seconds * 1000)
+        self.status_label.setText("Checking output...")
+        self.append_log("Checking Lua 5.4 syntax...")
+        process.start(str(compiler_path), ["-p", staged_output_argument])
+
+    def read_validation_output(self, process):
+        if self.validation_process is not process:
+            return
+        data = bytes(process.readAllStandardOutput())
+        self.validation_output_dropped += extend_bounded_bytes(
+            self.validation_output,
+            data,
+            VALIDATION_LOG_MAX_BYTES,
+        )
+
+    def validation_details(self):
+        details = self.validation_output.decode("utf-8", errors="replace").strip()
+        if self.validation_output_dropped:
+            marker = (
+                f"[... {self.validation_output_dropped:,} validation output bytes "
+                "discarded ...]"
+            )
+            details = f"{details}\n{marker}" if details else marker
+        return details
+
+    def validation_timeout(self):
+        process = self.validation_process
+        if process is None or process.state() == QProcess.NotRunning:
+            return
+        self.validation_timed_out = True
+        self.status_label.setText("Stopping syntax check...")
+        process.kill()
+
+    def validation_finished(self, process, exit_code, exit_status):
+        if self.validation_process is not process:
+            return
+        self.read_validation_output(process)
+        self.validation_timer.stop()
+        details = self.validation_details()
+        timed_out = self.validation_timed_out
+        self.validation_process = None
+        process.deleteLater()
+
+        if self.cancel_requested:
+            self.finish_operation("Cancelled", "Obfuscation cancelled.")
+        elif timed_out:
             if details:
                 self.append_log(details)
-            return False
+            self.finish_operation("Failed", "Lua syntax check timed out.")
+        elif exit_status != QProcess.NormalExit or exit_code != 0:
+            if details:
+                self.append_log(details)
+            self.finish_operation("Failed", "Lua output failed its syntax check.")
+        else:
+            self.append_log("Lua 5.4 syntax check passed.")
+            self.publish_validated_output()
 
-        self.append_log("Lua 5.4 syntax check passed.")
-        return True
+    def validation_error(self, process, error):
+        if self.validation_process is not process:
+            return
+        self.read_validation_output(process)
+        if error == QProcess.FailedToStart:
+            self.validation_timer.stop()
+            details = self.validation_details()
+            self.validation_process = None
+            process.deleteLater()
+            if details:
+                self.append_log(details)
+            if self.cancel_requested:
+                self.finish_operation("Cancelled", "Obfuscation cancelled.")
+            else:
+                self.finish_operation("Failed", "Lua syntax check could not start.")
+        elif error != QProcess.Crashed:
+            self.append_log(f"Lua syntax-check process error: {error}")
+
+    def publish_validated_output(self):
+        if self.cancel_requested:
+            self.finish_operation("Cancelled", "Obfuscation cancelled.")
+        elif self.publish_staged_output():
+            self.finish_operation(
+                "Done",
+                "Finished successfully.",
+                progress=100,
+                output_ready=True,
+            )
+        else:
+            self.finish_operation("Failed", "The output could not be saved.")
 
     def publish_staged_output(self) -> bool:
         if self.output_file is None or self.staged_output is None:
@@ -1343,25 +1583,43 @@ class LuaObfuscator(QMainWindow):
             shutil.copy2(self.staged_output, transfer_file)
             os.replace(transfer_file, self.output_file)
             return self.output_file.is_file() and self.output_file.stat().st_size > 0
-        except OSError as error:
+        except (OSError, RuntimeError, ValueError) as error:
             self.append_log(f"Could not save the output: {error}")
             return False
         finally:
             try:
                 transfer_file.unlink(missing_ok=True)
-            except OSError:
+            except (OSError, RuntimeError, ValueError):
                 pass
 
     def cleanup_work_dir(self):
         if self.work_dir is not None:
-            try:
-                shutil.rmtree(self.work_dir)
-            except OSError:
-                pass
+            remove_job_directory(
+                self.work_dir,
+                self.app_dir / ".runtime" / "work",
+            )
         self.work_dir = None
         self.staged_output = None
 
+    def finish_operation(self, status, message, progress=0, output_ready=False):
+        self.validation_timer.stop()
+        self.running = False
+        self.obfuscate_button.setText("Obfuscate")
+        self.set_controls_enabled(True)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(progress)
+        self.status_label.setText(status)
+        self.append_log(message)
+        self.open_folder_button.setEnabled(output_ready)
+        self.cleanup_work_dir()
+        self.process = None
+        self.validation_process = None
+        self.active_target = None
+        self.cancel_requested = False
+
     def process_finished(self, exit_code, exit_status):
+        if self.process is None or not self.running:
+            return
         self.pending_process_result = (exit_code, exit_status)
         self.process_log_final_requested = True
         if self.read_process_output(final=True):
@@ -1373,45 +1631,37 @@ class LuaObfuscator(QMainWindow):
         exit_code, exit_status = self.pending_process_result
         self.pending_process_result = None
         self.process_log_final_requested = False
-
-        self.running = False
-        self.obfuscate_button.setText("Obfuscate")
-        self.set_controls_enabled(True)
-        self.progress_bar.setRange(0, 100)
+        finished_process = self.process
+        self.process = None
+        if finished_process is not None:
+            finished_process.deleteLater()
 
         if self.cancel_requested:
-            self.progress_bar.setValue(0)
-            self.status_label.setText("Cancelled")
-            self.append_log("Obfuscation cancelled.")
-        elif exit_code == 0 and self.validate_staged_output() and self.publish_staged_output():
-            self.progress_bar.setValue(100)
-            self.status_label.setText("Done")
-            self.append_log("Finished successfully.")
-            self.open_folder_button.setEnabled(True)
+            self.finish_operation("Cancelled", "Obfuscation cancelled.")
+        elif exit_status != QProcess.NormalExit or exit_code != 0:
+            self.finish_operation(
+                "Failed",
+                f"Hercules exited with code {exit_code}.",
+            )
         else:
-            self.progress_bar.setValue(0)
-            self.status_label.setText("Failed")
-            self.append_log(f"Hercules exited with code {exit_code}.")
-
-        self.cleanup_work_dir()
-        self.process = None
-        self.active_target = None
+            staged_size = self.staged_output_size()
+            if staged_size is None:
+                self.finish_operation(
+                    "Failed",
+                    "Obfuscation did not produce a valid output.",
+                )
+            else:
+                self.start_output_validation(staged_size)
 
     def process_error(self, error):
         if error == QProcess.FailedToStart:
             self.read_process_output(final=True)
             self.pending_process_result = None
             self.process_log_final_requested = False
-            self.append_log("Could not start Lua. Run installer.bat again.")
-            self.running = False
-            self.obfuscate_button.setText("Obfuscate")
-            self.set_controls_enabled(True)
-            self.progress_bar.setRange(0, 100)
-            self.progress_bar.setValue(0)
-            self.status_label.setText("Failed")
-            self.cleanup_work_dir()
-            self.process = None
-            self.active_target = None
+            self.finish_operation(
+                "Failed",
+                "Could not start Lua. Run installer.bat again.",
+            )
         elif self.running and error != QProcess.Crashed:
             self.append_log(f"Process error: {error}")
 
@@ -1439,15 +1689,19 @@ class LuaObfuscator(QMainWindow):
             event.acceptProposedAction()
 
     def closeEvent(self, event: QCloseEvent):
-        if self.process and self.process.state() != QProcess.NotRunning:
-            self.process.kill()
-            self.process.waitForFinished(1000)
+        self.stale_cleanup_timer.stop()
+        self.validation_timer.stop()
+        self.cancel_requested = True
+        for process in (self.validation_process, self.process):
+            if process and process.state() != QProcess.NotRunning:
+                process.kill()
+                process.waitForFinished(1000)
         self.cleanup_work_dir()
         event.accept()
 
 
 def run_self_test(output_dir):
-    assert APP_VERSION == "1.0.6"
+    assert APP_VERSION == "1.0.7"
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     checks = []
@@ -1467,7 +1721,68 @@ def run_self_test(output_dir):
         assert window.cli_path is not None and window.cli_path.is_file()
         assert not window.running
         assert window.process is None
+        assert window.validation_process is None
+        assert window.validation_timer.isSingleShot()
         checks.append("window and local engine paths initialize without user files")
+
+        engine_args = build_obfuscation_arguments(
+            window.cli_path.name,
+            "input.lua",
+            "lua",
+            "light",
+        )
+        assert engine_args == [
+            "-E",
+            window.cli_path.name,
+            "input.lua",
+            "--target",
+            "lua",
+            "--light",
+            "--no-watermark",
+        ]
+
+        hostile_environment = os.environ.copy()
+        hostile_environment.update(
+            {
+                "LUA_INIT": "error('LUA_INIT must be ignored')",
+                "LUA_PATH": "C:\\untrusted\\?.lua",
+                "LUA_CPATH": "C:\\untrusted\\?.dll",
+            }
+        )
+        isolated_probe = subprocess.run(
+            [str(window.lua_path), "-E", "-e", "io.write('isolated')"],
+            cwd=str(window.lua_path.parent),
+            env=hostile_environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=15,
+            creationflags=window._creation_flags(),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        assert isolated_probe.returncode == 0
+        assert isolated_probe.stdout == "isolated"
+        checks.append("private Lua ignores user startup and module-path settings")
+
+        validation_buffer = bytearray()
+        validation_dropped = extend_bounded_bytes(
+            validation_buffer,
+            b"x" * (VALIDATION_LOG_MAX_BYTES + 257),
+            VALIDATION_LOG_MAX_BYTES,
+        )
+        assert len(validation_buffer) == VALIDATION_LOG_MAX_BYTES
+        assert validation_dropped == 257
+        checks.append("syntax-check diagnostics stay bounded")
+
+        missing_source = output_dir / f"missing-{uuid.uuid4().hex}.lua"
+        window.set_source_file(missing_source)
+        assert window.source_file is None
+        window.staged_output = missing_source
+        assert window.staged_output_size() is None
+        window.staged_output = None
+        checks.append("missing source and staged-output races are handled safely")
 
         oversized = "HEAD" + "x" * LOG_MESSAGE_MAX_CHARS + "TAIL"
         bounded = truncate_log_message(oversized)
@@ -1513,6 +1828,41 @@ def run_self_test(output_dir):
         checks.append("bounded logs retain useful head and tail output")
     finally:
         window.close()
+
+    with tempfile.TemporaryDirectory(prefix="fleece-lua-stale-work-") as temp_root:
+        work_root = Path(temp_root) / "work"
+        work_root.mkdir()
+        now = time.time()
+        for index in range(WORK_CLEANUP_REMOVE_LIMIT + 2):
+            stale = work_root / f"job-stale-{index:02d}"
+            stale.mkdir()
+            (stale / "input.lua").write_text("return true", encoding="utf-8")
+            old_time = now - WORK_CLEANUP_MIN_AGE_SECONDS - 60
+            os.utime(stale, (old_time, old_time))
+        fresh = work_root / "job-fresh"
+        fresh.mkdir()
+        unrelated = work_root / "keep-me"
+        unrelated.mkdir()
+
+        removed = cleanup_stale_work_directories(work_root, current_time=now)
+        assert removed == WORK_CLEANUP_REMOVE_LIMIT
+        assert fresh.is_dir() and unrelated.is_dir()
+        remaining_stale = list(work_root.glob("job-stale-*"))
+        assert len(remaining_stale) == 2
+        assert cleanup_stale_work_directories(work_root, current_time=now) == 2
+        assert not list(work_root.glob("job-stale-*"))
+        assert not remove_job_directory(unrelated, work_root)
+        outside = Path(temp_root) / "outside"
+        outside.mkdir()
+        linked_job = work_root / "job-linked"
+        try:
+            os.symlink(outside, linked_job, target_is_directory=True)
+        except (NotImplementedError, OSError):
+            pass
+        else:
+            assert not remove_job_directory(linked_job, work_root)
+            assert outside.is_dir()
+    checks.append("stale work cleanup is age-, name-, and count-bounded")
 
     if NATIVE_KERNEL32 is not None:
         test_name = rf"Local\FleeceLuaObfuscatorSelfTest-{uuid.uuid4().hex}"
