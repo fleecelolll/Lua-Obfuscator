@@ -19,7 +19,7 @@ from typing import Optional
 
 
 APP_TITLE = "Lua Obfuscator"
-APP_VERSION = "1.0.10"
+APP_VERSION = "1.0.11"
 HERCULES_COMMIT = "ace084c897369faf584dfa3baeea159d7b205213"
 LUA_RUNTIME_HASHES = {
     "lua54.dll": "a842f0d33c897ce08411ea2565e8c19859b45a2374b905de2d56434c7fa4d732",
@@ -138,6 +138,7 @@ try:
         QMouseEvent,
         QPainter,
         QPen,
+        QTextCursor,
     )
     from PySide6.QtWidgets import (
         QApplication,
@@ -475,7 +476,7 @@ class AnimatedDropdown(QWidget):
         layout.addWidget(self.button)
 
         self.popup = QFrame(
-            None,
+            self,
             Qt.Tool | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint,
         )
         self.popup.setObjectName("dropdownPopup")
@@ -534,12 +535,18 @@ class AnimatedDropdown(QWidget):
         else:
             final_y = below_y
 
-        end_rect = QRect(
-            button_top_left.x(),
-            final_y,
-            popup_width,
-            popup_height,
-        )
+        final_x = button_top_left.x()
+        if available:
+            final_x = max(
+                available.left(),
+                min(final_x, available.right() - popup_width + 1),
+            )
+            final_y = max(
+                available.top(),
+                min(final_y, available.bottom() - popup_height + 1),
+            )
+
+        end_rect = QRect(final_x, final_y, popup_width, popup_height)
         QApplication.instance().installEventFilter(self)
         self.popup.setGeometry(end_rect)
         self.popup.setWindowOpacity(0.0)
@@ -1140,10 +1147,12 @@ class LuaObfuscator(QMainWindow):
             path = path.expanduser().resolve(strict=True)
             path_is_file = path.is_file()
         except (OSError, RuntimeError, ValueError) as error:
+            self.clear_source_selection()
             self.status_label.setText("Choose a script file")
             self.append_log(f"Could not open that script path: {error}")
             return
         if not path_is_file or path.suffix.lower() not in {".lua", ".luau", ".txt"}:
+            self.clear_source_selection()
             self.status_label.setText("Choose a script file")
             self.append_log("Choose a valid .lua, .luau, or .txt file.")
             return
@@ -1160,6 +1169,13 @@ class LuaObfuscator(QMainWindow):
         self.append_log(f"Selected: {path.name}")
         if path.suffix.lower() == ".luau":
             self.target_dropdown.select("Roblox Luau")
+
+    def clear_source_selection(self):
+        self.source_file = None
+        self.output_file = None
+        self.file_path_label.setText("Choose a file or drag it here")
+        self.file_path_label.setToolTip("")
+        self.open_folder_button.setEnabled(False)
 
     def choose_output_folder(self):
         folder = QFileDialog.getExistingDirectory(
@@ -1192,7 +1208,12 @@ class LuaObfuscator(QMainWindow):
             return
 
         self.last_log_message = message
-        self.log_box.append(message)
+        cursor = self.log_box.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        if not self.log_box.document().isEmpty():
+            cursor.insertBlock()
+        cursor.insertText(message)
+        self.log_box.setTextCursor(cursor)
         scrollbar = self.log_box.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
@@ -1658,6 +1679,10 @@ class LuaObfuscator(QMainWindow):
             self.read_process_output(final=True)
             self.pending_process_result = None
             self.process_log_final_requested = False
+            failed_process = self.process
+            self.process = None
+            if failed_process is not None:
+                failed_process.deleteLater()
             self.finish_operation(
                 "Failed",
                 "Could not start Lua. Run installer.bat again.",
@@ -1689,6 +1714,8 @@ class LuaObfuscator(QMainWindow):
             event.acceptProposedAction()
 
     def closeEvent(self, event: QCloseEvent):
+        self.level_dropdown.hide_popup()
+        self.target_dropdown.hide_popup()
         self.stale_cleanup_timer.stop()
         self.validation_timer.stop()
         self.cancel_requested = True
@@ -1701,7 +1728,7 @@ class LuaObfuscator(QMainWindow):
 
 
 def run_self_test(output_dir):
-    assert APP_VERSION == "1.0.10"
+    assert APP_VERSION == "1.0.11"
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     checks = []
@@ -1776,13 +1803,19 @@ def run_self_test(output_dir):
         assert validation_dropped == 257
         checks.append("syntax-check diagnostics stay bounded")
 
+        valid_source = output_dir / f"valid-{uuid.uuid4().hex}.lua"
+        valid_source.write_text("return true\n", encoding="utf-8")
+        window.set_source_file(valid_source)
+        assert window.source_file == valid_source
         missing_source = output_dir / f"missing-{uuid.uuid4().hex}.lua"
         window.set_source_file(missing_source)
         assert window.source_file is None
+        assert window.output_file is None
+        assert window.file_path_label.text() == "Choose a file or drag it here"
         window.staged_output = missing_source
         assert window.staged_output_size() is None
         window.staged_output = None
-        checks.append("missing source and staged-output races are handled safely")
+        checks.append("invalid replacement paths clear stale source selections safely")
 
         oversized = "HEAD" + "x" * LOG_MESSAGE_MAX_CHARS + "TAIL"
         bounded = truncate_log_message(oversized)
@@ -1805,6 +1838,10 @@ def run_self_test(output_dir):
         assert captured.startswith("HEAD") and captured.endswith("TAIL")
         assert "captured bytes truncated" in captured
 
+        window.log_box.clear()
+        window.last_log_message = ""
+        window.append_log("<b>literal console text</b>")
+        assert window.log_box.toPlainText() == "<b>literal console text</b>"
         window.log_box.clear()
         window.last_log_message = ""
         for index in range(LOG_DOCUMENT_MAX_BLOCKS + 25):

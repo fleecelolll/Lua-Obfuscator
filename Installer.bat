@@ -80,7 +80,6 @@ set "PACKAGE_EMPTY=%RUNTIME%\b.empty"
 set "PACKAGE_BACKUP_MARKER=.fleece-package-backup"
 set "VENV=%ROOT%.venv"
 set "VENV_PY=%VENV%\Scripts\python.exe"
-set "VENV_PYW=%VENV%\Scripts\pythonw.exe"
 set "POWERSHELL_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 set "CURL_EXE=%SystemRoot%\System32\curl.exe"
 set "ROBOCOPY_EXE=%SystemRoot%\System32\robocopy.exe"
@@ -487,7 +486,7 @@ exit /b %ERRORLEVEL%
 exit /b %ERRORLEVEL%
 
 :WriteSetupMarker
-if /I not "%ENV_MODE%"=="venv" if /I not "%ENV_MODE%"=="embedded" exit /b 1
+if /I not "%ENV_MODE%"=="embedded" exit /b 1
 >"%SETUP_MARKER%.new" echo %ENV_MODE%
 if errorlevel 1 exit /b 1
 move /y "%SETUP_MARKER%.new" "%SETUP_MARKER%" >>"%LOG%" 2>&1
@@ -511,82 +510,6 @@ if not "%SETUP_LOCK_HELD%"=="1" exit /b 0
 exit /b %ERRORLEVEL%
 
 
-:FindBasePython
-set "BASE_PY="
-where py.exe >nul 2>nul
-if errorlevel 1 goto FindPathPython
-for %%V in (3.14 3.13 3.12 3.11 3.10) do call :TryPyTag %%V
-if defined BASE_PY exit /b 0
-
-:FindPathPython
-call :TryPythonCommand python.exe
-if defined BASE_PY exit /b 0
-call :TryPythonCommand python3.exe
-if defined BASE_PY exit /b 0
-for /f "delims=" %%P in ('where python.exe 2^>nul ^| findstr /V /I /C:"Microsoft\WindowsApps"') do call :TryPythonPath "%%P"
-if defined BASE_PY exit /b 0
-for /f "delims=" %%P in ('where python3.exe 2^>nul ^| findstr /V /I /C:"Microsoft\WindowsApps"') do call :TryPythonPath "%%P"
-if defined BASE_PY exit /b 0
-
-for %%P in (
-    "%LocalAppData%\Programs\Python\Python314\python.exe"
-    "%LocalAppData%\Programs\Python\Python313\python.exe"
-    "%LocalAppData%\Programs\Python\Python312\python.exe"
-    "%LocalAppData%\Programs\Python\Python311\python.exe"
-    "%LocalAppData%\Programs\Python\Python310\python.exe"
-    "%ProgramFiles%\Python314\python.exe"
-    "%ProgramFiles%\Python313\python.exe"
-    "%ProgramFiles%\Python312\python.exe"
-    "%ProgramFiles%\Python311\python.exe"
-    "%ProgramFiles%\Python310\python.exe"
-) do call :TryPythonPath "%%~fP"
-exit /b 0
-
-:TryPythonCommand
-if defined BASE_PY exit /b 0
-where %~1 >nul 2>nul
-if errorlevel 1 exit /b 1
-set "CANDIDATE_FILE=%RUNTIME%\python-candidate.txt"
-%~1 -I -c "import sys; print(sys.executable)" >"%CANDIDATE_FILE%" 2>>"%LOG%"
-if errorlevel 1 exit /b 1
-set "CANDIDATE="
-set /p "CANDIDATE="<"%CANDIDATE_FILE%"
-del /f /q "%CANDIDATE_FILE%" >nul 2>nul
-if not defined CANDIDATE exit /b 1
-call :TryPythonPath "%CANDIDATE%"
-exit /b %ERRORLEVEL%
-
-:TryPyTag
-if defined BASE_PY exit /b 0
-py -0p 2>nul | findstr /I /C:":%~1" >nul
-if errorlevel 1 exit /b 1
-set "CANDIDATE_FILE=%RUNTIME%\python-candidate.txt"
-py -%~1 -I -c "import sys; print(sys.executable)" >"%CANDIDATE_FILE%" 2>>"%LOG%"
-if errorlevel 1 exit /b 1
-set "CANDIDATE="
-set /p "CANDIDATE="<"%CANDIDATE_FILE%"
-del /f /q "%CANDIDATE_FILE%" >nul 2>nul
-if not defined CANDIDATE exit /b 1
-call :TryPythonPath "%CANDIDATE%"
-exit /b %ERRORLEVEL%
-
-:TryPythonPath
-if defined BASE_PY exit /b 0
-if "%~1"=="" exit /b 1
-if not exist "%~1" exit /b 1
-call :ValidatePython "%~1"
-if errorlevel 1 exit /b 1
-set "BASE_PY=%~1"
-set "LOG_MESSAGE=Found compatible base CPython: %~1"
-call :LogCurrent
-exit /b 0
-
-:ValidatePython
-if "%~1"=="" exit /b 1
-if not exist "%~1" exit /b 1
-"%~1" -I -c "import sys, struct, venv, ensurepip; ok = sys.implementation.name == 'cpython' and (3, 10) <= sys.version_info[:2] < (3, 15) and struct.calcsize('P') == 8; raise SystemExit(0 if ok else 1)" >>"%LOG%" 2>&1
-exit /b %ERRORLEVEL%
-
 :ValidateEmbeddedPython
 call :ValidateEmbeddedPythonAt "%PYTHON_DIR%"
 exit /b %ERRORLEVEL%
@@ -603,16 +526,6 @@ if errorlevel 1 exit /b 1
 if errorlevel 1 exit /b 1
 "%~1\python.exe" -I -c "import sys; sys.path.insert(0, sys.argv[1]); from pip._internal.cli.main import main; raise SystemExit(main(sys.argv[2:]))" "%~1\pip.whl" --version >>"%LOG%" 2>&1
 exit /b %ERRORLEVEL%
-
-:DescribePython
-"%~1" -I -c "import sys, platform; print('Selected CPython ' + platform.python_version() + ' at ' + sys.executable)" >>"%LOG%" 2>&1
-set "PYTHON_VERSION_FILE=%RUNTIME%\python-version.txt"
-"%~1" -I -c "import platform; print(platform.python_version())" >"%PYTHON_VERSION_FILE%" 2>>"%LOG%"
-set "PYTHON_DISPLAY_VERSION="
-if exist "%PYTHON_VERSION_FILE%" set /p "PYTHON_DISPLAY_VERSION="<"%PYTHON_VERSION_FILE%"
-del /f /q "%PYTHON_VERSION_FILE%" >nul 2>nul
-if defined PYTHON_DISPLAY_VERSION echo      Using compatible Python %PYTHON_DISPLAY_VERSION%.
-exit /b 0
 
 :InstallEmbedPy
 call :ValidateEmbeddedPython
@@ -647,20 +560,8 @@ call :LogCurrent
 exit /b 0
 
 :ValidateSelectedEnvironment
-if /I "%ENV_MODE%"=="venv" goto ValidateSelectedVenv
-if /I "%ENV_MODE%"=="embedded" goto ValidateSelectedEmbedded
-exit /b 1
-
-:ValidateSelectedVenv
-call :ValidateVenv
-exit /b %ERRORLEVEL%
-
-:ValidateSelectedEmbedded
+if /I not "%ENV_MODE%"=="embedded" exit /b 1
 call :ValidateEmbeddedPython
-exit /b %ERRORLEVEL%
-
-:ValidateVenv
-call :ValidateVenvAt "%VENV%"
 exit /b %ERRORLEVEL%
 
 :ValidateVenvAt
@@ -671,21 +572,6 @@ if not exist "%~1\pyvenv.cfg" exit /b 1
 "%~1\Scripts\python.exe" -I -c "import sys, struct; ok = sys.implementation.name == 'cpython' and (3, 10) <= sys.version_info[:2] < (3, 15) and struct.calcsize('P') == 8 and sys.prefix != sys.base_prefix; raise SystemExit(0 if ok else 1)" >>"%LOG%" 2>&1
 exit /b %ERRORLEVEL%
 
-:CreateVenv
-if not defined BASE_PY exit /b 1
-call :ValidatePython "%BASE_PY%"
-if errorlevel 1 exit /b 1
-
-if exist "%VENV%" call :RemovePkgTree "%VENV%"
-if exist "%VENV%" exit /b 1
-
-set "LOG_MESSAGE=Creating virtual environment with: %BASE_PY%"
-call :LogCurrent
-"%BASE_PY%" -I -m venv --copies "%VENV%" >>"%LOG%" 2>&1
-if errorlevel 1 exit /b 1
-call :ValidateVenv
-exit /b %ERRORLEVEL%
-
 :InstallPythonPackages
 if not defined APP_PY exit /b 1
 if not exist "%APP_PY%" exit /b 1
@@ -693,27 +579,21 @@ call :CurrentPackagesFullyHealthy
 if not errorlevel 1 exit /b 0
 call :BeginPackageTransaction
 if errorlevel 1 exit /b 1
-if /I "%ENV_MODE%"=="venv" call :InstallVenvPackages
-if /I "%ENV_MODE%"=="embedded" call :InstallEmbeddedPackages
+if /I not "%ENV_MODE%"=="embedded" exit /b 1
+call :InstallEmbeddedPackages
 set "PACKAGE_TRANSACTION_CODE=%ERRORLEVEL%"
 call :FinishPackageTransaction %PACKAGE_TRANSACTION_CODE%
 exit /b %ERRORLEVEL%
 
 :CurrentPackagesFullyHealthy
-if /I "%ENV_MODE%"=="venv" (
-    call :HasPinnedPip
-    if errorlevel 1 exit /b 1
-)
 call :HasPinnedPySide
 if errorlevel 1 exit /b 1
 call :VerifyPythonPackages
 exit /b %ERRORLEVEL%
 
 :BeginPackageTransaction
-set "PACKAGE_TARGET="
-if /I "%ENV_MODE%"=="venv" set "PACKAGE_TARGET=%VENV%"
-if /I "%ENV_MODE%"=="embedded" set "PACKAGE_TARGET=%PYTHON_DIR%"
-if not defined PACKAGE_TARGET exit /b 1
+if /I not "%ENV_MODE%"=="embedded" exit /b 1
+set "PACKAGE_TARGET=%PYTHON_DIR%"
 if not exist "%PACKAGE_TARGET%" exit /b 1
 call :ValidatePackageEnvironmentAt "%PACKAGE_TARGET%" "%ENV_MODE%"
 if errorlevel 1 exit /b 1
@@ -819,20 +699,16 @@ exit /b 1
 :SetPackageTargetFromMode
 set "PACKAGE_TARGET="
 set "PACKAGE_VALIDATION_PY="
-set "PACKAGE_VALIDATION_PYW="
 if /I "%~1"=="embedded" (
     set "PACKAGE_TARGET=%PYTHON_DIR%"
     set "PACKAGE_VALIDATION_PY=%RUNTIME_PY%"
-    set "PACKAGE_VALIDATION_PYW=%RUNTIME_PYW%"
 )
 if /I "%~1"=="venv" (
     set "PACKAGE_TARGET=%VENV%"
     set "PACKAGE_VALIDATION_PY=%VENV_PY%"
-    set "PACKAGE_VALIDATION_PYW=%VENV_PYW%"
 )
 if not defined PACKAGE_TARGET exit /b 1
 if not defined PACKAGE_VALIDATION_PY exit /b 1
-if not defined PACKAGE_VALIDATION_PYW exit /b 1
 exit /b 0
 
 :ValidatePackageEnvironmentAt
@@ -942,50 +818,6 @@ if errorlevel 1 exit /b 1
 if exist "%PACKAGE_BACKUP%" exit /b 1
 exit /b 0
 
-:InstallVenvPackages
-call :EnsureCurrentVenvPip
-if errorlevel 1 exit /b 1
-call :HasPinnedPySide
-if errorlevel 1 goto CheckVenvPip
-call :VerifyPythonPackages
-if not errorlevel 1 exit /b 0
-
-:CheckVenvPip
-"%APP_PY%" -I -m pip --version >>"%LOG%" 2>&1
-if not errorlevel 1 goto InstallPinnedVenvPackage
-set "LOG_MESSAGE=pip was missing; attempting ensurepip repair."
-call :LogCurrent
-"%APP_PY%" -I -m ensurepip --upgrade >>"%LOG%" 2>&1
-if errorlevel 1 exit /b 1
-
-:InstallPinnedVenvPackage
-set "LOG_MESSAGE=Installing pinned %PYSIDE_DISTRIBUTION% %PYSIDE_VERSION% from official PyPI."
-call :LogCurrent
-"%APP_PY%" -I -m pip --isolated --disable-pip-version-check install --upgrade --no-cache-dir --only-binary=:all: --index-url "%PYPI_INDEX%" "%PYSIDE_DISTRIBUTION%==%PYSIDE_VERSION%" >>"%LOG%" 2>&1
-set "PACKAGE_INSTALL_CODE=%ERRORLEVEL%"
-goto CheckInstalledPackages
-
-:EnsureCurrentVenvPip
-call :HasPinnedPip
-if not errorlevel 1 exit /b 0
-"%APP_PY%" -I -m pip --version >>"%LOG%" 2>&1
-if not errorlevel 1 goto UpgradeCurrentVenvPip
-set "LOG_MESSAGE=pip was missing; attempting ensurepip repair."
-call :LogCurrent
-"%APP_PY%" -I -m ensurepip --upgrade >>"%LOG%" 2>&1
-if errorlevel 1 exit /b 1
-:UpgradeCurrentVenvPip
-"%APP_PY%" -I -m pip --isolated --disable-pip-version-check install --upgrade --no-cache-dir --only-binary=:all: --index-url "%PYPI_INDEX%" "pip==%PIP_VERSION%" >>"%LOG%" 2>&1
-if errorlevel 1 exit /b 1
-"%APP_PY%" -I -c "from importlib.metadata import version; raise SystemExit(0 if version('pip') == '%PIP_VERSION%' else 1)" >>"%LOG%" 2>&1
-exit /b %ERRORLEVEL%
-
-:HasPinnedPip
-if not defined APP_PY exit /b 1
-if not exist "%APP_PY%" exit /b 1
-"%APP_PY%" -I -c "from importlib.metadata import version; raise SystemExit(0 if version('pip') == '%PIP_VERSION%' else 1)" >>"%LOG%" 2>&1
-exit /b %ERRORLEVEL%
-
 :InstallEmbeddedPackages
 call :ValidateEmbeddedPython
 if errorlevel 1 exit /b 1
@@ -1002,7 +834,6 @@ if errorlevel 1 exit /b 1
 "%APP_PY%" -I -c "import sys; sys.path.insert(0, sys.argv[1]); from pip._internal.cli.main import main; raise SystemExit(main(sys.argv[2:]))" "%PIP_WHEEL%" --isolated --disable-pip-version-check install --upgrade --no-cache-dir --only-binary=:all: --index-url "%PYPI_INDEX%" --target "%LOCAL_SITE%" "%PYSIDE_DISTRIBUTION%==%PYSIDE_VERSION%" >>"%LOG%" 2>&1
 set "PACKAGE_INSTALL_CODE=%ERRORLEVEL%"
 
-:CheckInstalledPackages
 if not "%PACKAGE_INSTALL_CODE%"=="0" goto RepairPythonPackages
 call :VerifyPythonPackages
 if not errorlevel 1 exit /b 0
@@ -1011,20 +842,12 @@ if not errorlevel 1 exit /b 0
 echo      A component check failed. Repairing local packages...
 set "LOG_MESSAGE=Initial package validation failed; forcing a clean package reinstall."
 call :LogCurrent
-if /I "%ENV_MODE%"=="venv" goto RepairVenvPackages
-if /I "%ENV_MODE%"=="embedded" goto RepairEmbeddedPackages
-exit /b 1
+if /I not "%ENV_MODE%"=="embedded" exit /b 1
 
-:RepairVenvPackages
-"%APP_PY%" -I -m pip --isolated --disable-pip-version-check install --upgrade --force-reinstall --no-cache-dir --only-binary=:all: --index-url "%PYPI_INDEX%" "%PYSIDE_DISTRIBUTION%==%PYSIDE_VERSION%" >>"%LOG%" 2>&1
-goto RepairPackagesFinished
-
-:RepairEmbeddedPackages
 call :ClearEmbeddedPySidePackages
 if errorlevel 1 exit /b 1
 "%APP_PY%" -I -c "import sys; sys.path.insert(0, sys.argv[1]); from pip._internal.cli.main import main; raise SystemExit(main(sys.argv[2:]))" "%PIP_WHEEL%" --isolated --disable-pip-version-check install --upgrade --force-reinstall --no-cache-dir --only-binary=:all: --index-url "%PYPI_INDEX%" --target "%LOCAL_SITE%" "%PYSIDE_DISTRIBUTION%==%PYSIDE_VERSION%" >>"%LOG%" 2>&1
 
-:RepairPackagesFinished
 if errorlevel 1 exit /b 1
 call :VerifyPythonPackages
 exit /b %ERRORLEVEL%
@@ -1034,15 +857,7 @@ if not defined APP_PY exit /b 1
 if not exist "%APP_PY%" exit /b 1
 "%APP_PY%" -I -c "import PySide6; from importlib.metadata import version; from PySide6.QtCore import qVersion; assert version('%PYSIDE_DISTRIBUTION%') == '%PYSIDE_VERSION%'; print('%PYSIDE_DISTRIBUTION%=' + version('%PYSIDE_DISTRIBUTION%')); print('Qt=' + qVersion())" >>"%LOG%" 2>&1
 if errorlevel 1 exit /b 1
-if /I "%ENV_MODE%"=="venv" goto CheckVenvDependencies
-if /I "%ENV_MODE%"=="embedded" goto CheckEmbeddedDependencies
-exit /b 1
-
-:CheckVenvDependencies
-"%APP_PY%" -I -m pip --isolated --disable-pip-version-check check >>"%LOG%" 2>&1
-exit /b %ERRORLEVEL%
-
-:CheckEmbeddedDependencies
+if /I not "%ENV_MODE%"=="embedded" exit /b 1
 "%APP_PY%" -I -c "import sys; sys.path.insert(0, sys.argv[1]); from pip._internal.cli.main import main; raise SystemExit(main(sys.argv[2:]))" "%PIP_WHEEL%" --isolated --disable-pip-version-check check >>"%LOG%" 2>&1
 exit /b %ERRORLEVEL%
 
@@ -1064,10 +879,6 @@ exit /b %ERRORLEVEL%
 set "REPLACE_NEW=%~1"
 set "REPLACE_TARGET=%~2"
 goto ReplaceDirectoryValuesReady
-
-:ReplaceDirectoryCurrent
-if not defined REPLACE_NEW exit /b 1
-if not defined REPLACE_TARGET exit /b 1
 
 :ReplaceDirectoryValuesReady
 set "REPLACE_BACKUP=%REPLACE_TARGET%.old"
