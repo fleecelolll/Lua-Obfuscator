@@ -37,11 +37,9 @@ A little tool I made with AI to quickly obfuscate Lua 5.4 and Roblox Luau script
 
 Keep the full extracted folder path at 72 characters or fewer so Windows can install the private packages reliably.
 
-Setup keeps the private Python runtime and all app-specific components inside the extracted folder. It does not require administrator access, change PATH, or install global Python packages. The shortcut starts the app with that private runtime, so Microsoft Store or system Python is not required.
+Setup keeps the private Python runtime, dependencies, settings, and every app component inside the extracted folder. It does not require administrator access, change PATH, or install global Python packages. The generated folder-local shortcut starts the app directly with that private runtime, so Microsoft Store or system Python is not required.
 
 Setup pins and verifies official Python 3.14.7, pip, PySide6-Essentials, Hercules, and Lua 5.4.8. Downloaded runtime archives are checked against pinned SHA-256 hashes before use.
-
-Setup also installs one small shared per-user launcher in `%LOCALAPPDATA%\Fleece Tools\Python Launcher` and safely associates `.pyw` files with it for the current Windows account. It backs up an existing per-user association before the first change and never borrows another tool's Python runtime.
 
 Run `Installer.bat` again to repair the private components or after moving the complete folder. Setup preserves your source files and recreates the shortcut for the folder's current location.
 
@@ -66,9 +64,7 @@ Lua output is saved as `<name>.obfuscated.lua`. Luau output is saved as `<name>.
 
 The app has no telemetry, analytics, advertisements, accounts, uploads, or runtime network requests. Scripts are processed locally. Setup logs can contain local folder paths, so review them before sharing.
 
-To remove only Lua Obfuscator, close it and delete the extracted folder. The app does not install a background service, add itself to startup, or create an uninstaller entry.
-
-The shared `.pyw` launcher can be used by every installed Fleece Tool, so removing one tool does not remove it. To restore the association that existed before Fleece Tools first configured it, run `%LOCALAPPDATA%\Fleece Tools\Python Launcher\Restore pyw association.cmd` after closing every Fleece Tool.
+To remove Lua Obfuscator, close it and delete the extracted folder. This removes its folder-local shortcut, private runtime, dependencies, settings, and app files. The app does not install a background service, add itself to startup, or create an uninstaller entry.
 
 ## troubleshooting
 
